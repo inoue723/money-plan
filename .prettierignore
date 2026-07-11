@@ -1,0 +1,9 @@
+node_modules
+dist
+build
+pnpm-lock.yaml
+coverage
+
+# 既存ドキュメント(本issueのスコープ外)
+SPEC.md
+issues/
