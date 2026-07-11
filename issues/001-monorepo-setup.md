@@ -17,8 +17,8 @@
 - pnpm workspace の初期化(`pnpm-workspace.yaml`、ルート `package.json`)
 - ディレクトリ構成の作成
   - `apps/web`(空のViteプロジェクトとして初期化。詳細な画面実装は別issue)
-  - `packages/domain`(空のTypeScriptパッケージとして初期化。計算ロジックは別issue)
-- `apps/web` から `packages/domain` への workspace 依存が解決できることを確認
+  - `packages/finance-core`(空のTypeScriptパッケージとして初期化。計算ロジックは別issue)
+- `apps/web` から `packages/finance-core` への workspace 依存が解決できることを確認
 - TypeScript の共通設定(ルートの `tsconfig.base.json` を各パッケージが継承)
 - Lint / Format ツールの導入(ESLint + Prettier)
 - ルートに共通スクリプトを定義(`dev` / `build` / `lint` / `test`)
@@ -45,15 +45,15 @@
 ├── apps/
 │   └── web/          # React + TypeScript + Vite
 └── packages/
-    └── domain/       # 計算エンジン(UI非依存)
+    └── finance-core/ # 計算エンジン(UI非依存)
 ```
 
 ## 完了条件(受け入れ基準)
 
 - [ ] リポジトリルートで `pnpm install` が成功する
 - [ ] `pnpm --filter web dev` で Vite 開発サーバーが起動し、初期画面がブラウザで表示される
-- [ ] `packages/domain` にダミー関数(例: `export const ping = () => 'pong'`)を置き、`apps/web` から import して画面に表示できる(workspace 依存の疎通確認)
-- [ ] ルートで `pnpm build` を実行すると `packages/domain` と `apps/web` がビルドされる
+- [ ] `packages/finance-core` にダミー関数(例: `export const ping = () => 'pong'`)を置き、`apps/web` から import して画面に表示できる(workspace 依存の疎通確認)
+- [ ] ルートで `pnpm build` を実行すると `packages/finance-core` と `apps/web` がビルドされる
 - [ ] ルートで `pnpm lint` が実行でき、エラーなく完了する
 - [ ] TypeScript が strict モードで型チェックを通過する
 

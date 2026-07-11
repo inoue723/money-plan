@@ -8,7 +8,7 @@
 
 ## 目的 / 背景
 
-入力データから年次の資産推移を算出する計算エンジンを `packages/domain` に実装する。UIから独立した純粋関数群として実装し、単体テスト可能とする。Webアプリの入力フォーム・グラフはこのエンジンの出力に依存するため、機能実装の中核かつ最優先となる。
+入力データから年次の資産推移を算出する計算エンジンを `packages/finance-core` に実装する。UIから独立した純粋関数群として実装し、単体テスト可能とする。Webアプリの入力フォーム・グラフはこのエンジンの出力に依存するため、機能実装の中核かつ最優先となる。
 
 ## スコープ
 
@@ -37,7 +37,7 @@
 
 ## 技術方針
 
-- `packages/domain` 内に純粋関数として実装(副作用・DOM/IO依存なし)
+- `packages/finance-core` 内に純粋関数として実装(副作用・DOM/IO依存なし)
 - エントリポイントは `runSimulation(input: SimulationInput): YearlyResult[]` を想定
 - 定数は `constants/2026.ts` のように年度別ファイルで管理し、税制改正時は定数追加で対応できる構造にする
 - 税制はSPEC.md 2.3.2 に従い給与所得者向けの簡易モデルとする(2026年度基準)
@@ -45,7 +45,7 @@
 ## 主要インターフェース(想定)
 
 ```typescript
-// packages/domain/src/index.ts
+// packages/finance-core/src/index.ts
 export function runSimulation(input: SimulationInput): YearlyResult[];
 
 // 内部モジュール
@@ -64,7 +64,7 @@ export function calcInvestment(prev: InvestmentState, params: InvestmentParams):
 - [ ] 教育費が子どもの年齢・進路に応じて正しく計上される
 - [ ] 投資の複利運用・取り崩し・課税/非課税の区別がテストで検証される
 - [ ] ライフイベント(住宅購入で家賃→ローンに切替、出産で教育費・児童手当が発生 等)が結果に反映される
-- [ ] `pnpm --filter domain test` で全テストがパスする
+- [ ] `pnpm --filter finance-core test` で全テストがパスする
 - [ ] UI・IO への依存がない(import に React やブラウザAPIを含まない)
 
 ## テスト観点

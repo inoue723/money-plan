@@ -245,7 +245,7 @@
 │           ├── components/    # 共通UIコンポーネント
 │           └── stores/        # 状態管理・localStorage永続化
 └── packages/
-    └── domain/                # 計算エンジン(UI非依存パッケージ)
+    └── finance-core/          # 計算エンジン(UI非依存パッケージ)
         └── src/
             ├── simulation.ts  # 年次シミュレーションの本体
             ├── tax.ts         # 所得税・住民税・社会保険料の計算
@@ -256,7 +256,7 @@
 ```
 
 - `apps/web`: Webアプリ本体。将来 APIサーバー(例: `apps/api`)を追加する場合もこの階層に並べる
-- `packages/domain`: 計算エンジンを独立パッケージとして切り出し、`apps/web` から依存する。将来サーバーサイドやCLIからも再利用可能とする
+- `packages/finance-core`: 計算エンジンを独立パッケージとして切り出し、`apps/web` から依存する。将来サーバーサイドやCLIからも再利用可能とする
 
 ### 4.4 主要データ型(概要)
 
