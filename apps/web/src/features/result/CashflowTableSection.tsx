@@ -85,7 +85,7 @@ export function CashflowTableSection() {
                   return (
                     <td
                       key={r.year}
-                      className={`sticky top-9 z-10 h-8 border-b border-slate-200 px-3 text-right tabular-nums ${
+                      className={`sticky top-9 z-20 h-8 border-b border-slate-200 px-3 text-right tabular-nums ${
                         isSelected ? 'bg-sky-50 text-sky-800' : 'bg-slate-50 text-slate-500'
                       }`}
                     >
