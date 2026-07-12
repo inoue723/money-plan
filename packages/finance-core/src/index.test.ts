@@ -18,9 +18,9 @@ describe('finance-core 疎通', () => {
       basic: { currentAge: 30, endAge: 90, savings: 500, investments: 0 },
       family: { children: [] },
       income: {
-        salary: 500,
-        raiseRate: 1.0,
-        retirementAge: 65,
+        workPeriods: [
+          { startAge: 30, endAge: 64, workStyle: 'employee', income: 500, raiseRate: 1.0 },
+        ],
         retirementBonus: 0,
         pension: 0,
         other: 0,

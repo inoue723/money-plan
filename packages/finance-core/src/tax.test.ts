@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  calcBusinessIncome,
   calcChildAllowance,
   calcChildAllowanceManyen,
   calcIncomeTax,
+  calcNationalHealthInsurance,
   calcNetSalary,
   calcPensionDeduction,
   calcPensionTax,
@@ -12,6 +14,8 @@ import {
   calcSalaryIncome,
   calcSalaryIncomeDeduction,
   calcSalaryTax,
+  calcSelfEmployedSocialInsurance,
+  calcSelfEmployedTax,
   calcSocialInsurance,
 } from './tax';
 
@@ -85,24 +89,27 @@ describe('給与の総合計算(calcSalaryTax)', () => {
     { gross: 1000, minRate: 0.68, maxRate: 0.75 },
   ];
 
-  it.each(cases)('年収 $gross 万(独身)の手取り率が妥当な範囲に収まる', ({ gross, minRate, maxRate }) => {
-    const { breakdown, netSalary } = calcSalaryTax({ grossSalary: gross });
-    const rate = netSalary / gross;
-    expect(rate).toBeGreaterThan(minRate);
-    expect(rate).toBeLessThan(maxRate);
+  it.each(cases)(
+    '年収 $gross 万(独身)の手取り率が妥当な範囲に収まる',
+    ({ gross, minRate, maxRate }) => {
+      const { breakdown, netSalary } = calcSalaryTax({ grossSalary: gross });
+      const rate = netSalary / gross;
+      expect(rate).toBeGreaterThan(minRate);
+      expect(rate).toBeLessThan(maxRate);
 
-    // 内訳の社会保険料合計は各保険料の和に一致する。
-    expect(breakdown.socialInsurance).toBeCloseTo(
-      breakdown.healthInsurance + breakdown.pensionInsurance + breakdown.employmentInsurance,
-      6,
-    );
+      // 内訳の社会保険料合計は各保険料の和に一致する。
+      expect(breakdown.socialInsurance).toBeCloseTo(
+        breakdown.healthInsurance + breakdown.pensionInsurance + breakdown.employmentInsurance,
+        6,
+      );
 
-    // 手取り = 額面 − 所得税 − 住民税 − 社会保険料。
-    expect(netSalary).toBeCloseTo(
-      gross - breakdown.incomeTax - breakdown.residentTax - breakdown.socialInsurance,
-      6,
-    );
-  });
+      // 手取り = 額面 − 所得税 − 住民税 − 社会保険料。
+      expect(netSalary).toBeCloseTo(
+        gross - breakdown.incomeTax - breakdown.residentTax - breakdown.socialInsurance,
+        6,
+      );
+    },
+  );
 
   it('年収 400 万・独身の税額がおおよその想定値に一致する', () => {
     const { breakdown } = calcSalaryTax({ grossSalary: 400 });
@@ -126,6 +133,75 @@ describe('給与の総合計算(calcSalaryTax)', () => {
 
   it('calcNetSalary は calcSalaryTax の手取りと一致する', () => {
     expect(calcNetSalary({ grossSalary: 700 })).toBe(calcSalaryTax({ grossSalary: 700 }).netSalary);
+  });
+});
+
+describe('個人事業主(青色申告)の税・社会保険料', () => {
+  it('青色申告特別控除 65 万円を差し引いた所得を求める(0 未満は 0)', () => {
+    expect(calcBusinessIncome(5_000_000)).toBe(4_350_000);
+    expect(calcBusinessIncome(500_000)).toBe(0);
+  });
+
+  it('国民健康保険料 = (所得 − 基礎控除 43 万)× 10.4% + 均等割', () => {
+    // 所得 435 万: (4,350,000 − 430,000) × 0.104 + 64,000 = 471,680
+    expect(calcNationalHealthInsurance(4_350_000)).toBe(471_680);
+    // 所得 0(基礎控除以下)は均等割のみ。
+    expect(calcNationalHealthInsurance(0)).toBe(64_000);
+  });
+
+  it('国民健康保険料は賦課限度額(92 万円)で頭打ちになる', () => {
+    expect(calcNationalHealthInsurance(50_000_000)).toBe(920_000);
+  });
+
+  it('社会保険料 = 国保 + 国民年金(定額)。雇用保険・厚生年金なし', () => {
+    const s = calcSelfEmployedSocialInsurance(4_350_000);
+    expect(s.health).toBe(471_680); // 国民健康保険
+    expect(s.pension).toBe(215_040); // 国民年金 17,920 円 × 12
+    expect(s.employment).toBe(0);
+    expect(s.total).toBe(s.health + s.pension);
+  });
+
+  it('calcSelfEmployedTax: 手取り = 事業所得 − 所得税 − 住民税 − 社会保険料', () => {
+    const { breakdown, netIncome } = calcSelfEmployedTax({ businessIncome: 500 });
+
+    // 内訳: 国民年金は定額、雇用保険は 0。合計は各保険料の和。
+    expect(breakdown.pensionInsurance).toBeCloseTo(21.504, 6);
+    expect(breakdown.employmentInsurance).toBe(0);
+    expect(breakdown.socialInsurance).toBeCloseTo(
+      breakdown.healthInsurance + breakdown.pensionInsurance,
+      6,
+    );
+
+    expect(netIncome).toBeCloseTo(
+      500 - breakdown.incomeTax - breakdown.residentTax - breakdown.socialInsurance,
+      6,
+    );
+
+    // 手取り率がおおよそ妥当な範囲に収まる。
+    const rate = netIncome / 500;
+    expect(rate).toBeGreaterThan(0.7);
+    expect(rate).toBeLessThan(0.85);
+  });
+
+  it('事業所得 500 万・独身の税額がおおよその想定値に一致する', () => {
+    const { breakdown } = calcSelfEmployedTax({ businessIncome: 500 });
+    // 所得 435 万 − 社保 68.672 万 − 基礎控除で、
+    // 所得税 ≈ 22.5 万、住民税 ≈ 32.8 万、社会保険料 ≈ 68.7 万(万円単位)。
+    expect(breakdown.incomeTax).toBeCloseTo(22.5436, 2);
+    expect(breakdown.residentTax).toBeCloseTo(32.83, 2);
+    expect(breakdown.socialInsurance).toBeCloseTo(68.672, 3);
+  });
+
+  it('配偶者控除・扶養控除で課税が軽くなる', () => {
+    const single = calcSelfEmployedTax({ businessIncome: 500 });
+    const withFamily = calcSelfEmployedTax({
+      businessIncome: 500,
+      hasSpouseDeduction: true,
+      dependents: ['general'],
+    });
+    expect(withFamily.netIncome).toBeGreaterThan(single.netIncome);
+    expect(withFamily.breakdown.incomeTax).toBeLessThan(single.breakdown.incomeTax);
+    expect(withFamily.breakdown.residentTax).toBeLessThan(single.breakdown.residentTax);
   });
 });
 

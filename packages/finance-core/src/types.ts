@@ -137,17 +137,37 @@ export interface FamilyInput {
   children: Child[];
 }
 
+/** 働き方の種別(会社員 / 個人事業主)。 */
+export type WorkStyle = 'employee' | 'selfEmployed';
+
+/**
+ * 働き方期間(#30)。本人の収入は年齢期間ごとの働き方リストで表す
+ * (例: 25〜40歳は会社員、41〜65歳は個人事業主)。
+ * 期間同士は重複しない前提(UIでバリデーションする)。隙間 = 無収入期間は許容する。
+ */
+export interface WorkPeriod {
+  /** 開始年齢(歳)。 */
+  startAge: number;
+  /** 終了年齢(歳、この年齢まで働く=両端を含む)。 */
+  endAge: number;
+  /** 働き方(会社員 / 個人事業主)。 */
+  workStyle: WorkStyle;
+  /**
+   * 収入(年額・万円)。会社員は年収(額面)、個人事業主は事業所得(売上 − 経費)。
+   * 期間の開始年齢時点の金額で、期間内は raiseRate で複利成長する。
+   */
+  income: number;
+  /** 昇給率・収入成長率(年率 %)。期間内で複利適用。 */
+  raiseRate: number;
+}
+
 /** F-02 収入情報(金額はすべて万円)。 */
 export interface IncomeInput {
-  /** 本人の年収(額面・万円)。 */
-  salary: number;
-  /** 昇給率(年率 %)。デフォルト 1.0。 */
-  raiseRate: number;
-  /** 退職年齢(歳)。デフォルト 65。 */
-  retirementAge: number;
-  /** 退職金(万円)。退職年齢時に一括計上。 */
+  /** 本人の働き方期間のリスト(重複なし。隙間 = 無収入期間は許容)。 */
+  workPeriods: WorkPeriod[];
+  /** 退職金(万円)。最後の会社員期間の終了翌年に一括計上。 */
   retirementBonus: number;
-  /** 年金受給額(年額・万円)。 */
+  /** 年金受給額(年額・万円)。全就労期間の終了翌年から受給。 */
   pension: number;
   /** その他の収入(年額・万円、手取り扱い)。 */
   other: number;
@@ -205,7 +225,7 @@ export interface SimulationInput {
 
 /** 収入内訳(SPEC.md 2.3.4、金額はすべて万円)。 */
 export interface IncomeBreakdown {
-  /** 本人の額面給与。 */
+  /** 本人の額面収入(会社員期間は額面給与、個人事業主期間は事業所得)。 */
   grossSalary: number;
   /** 配偶者の額面給与。 */
   spouseSalary: number;
@@ -232,13 +252,13 @@ export interface TaxBreakdown {
   incomeTax: number;
   /** 住民税(所得割 + 均等割)。 */
   residentTax: number;
-  /** 健康保険料(被保険者負担分)。 */
+  /** 健康保険料(会社員: 被保険者負担分 / 個人事業主: 国民健康保険料)。 */
   healthInsurance: number;
-  /** 厚生年金保険料(被保険者負担分)。 */
+  /** 年金保険料(会社員: 厚生年金の被保険者負担分 / 個人事業主: 国民年金)。 */
   pensionInsurance: number;
-  /** 雇用保険料(被保険者負担分)。 */
+  /** 雇用保険料(被保険者負担分。個人事業主期間は 0)。 */
   employmentInsurance: number;
-  /** 社会保険料合計(健康保険 + 厚生年金 + 雇用保険。互換のため保持)。 */
+  /** 社会保険料合計(健康保険 + 年金 + 雇用保険。互換のため保持)。 */
   socialInsurance: number;
 }
 

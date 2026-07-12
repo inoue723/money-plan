@@ -43,9 +43,16 @@ export const DEFAULT_INPUT: SimulationInput = {
     children: [],
   },
   income: {
-    salary: 500, // 本人の年収(額面・万円)
-    raiseRate: 1.0, // SPEC.md 2.2 デフォルト 1.0%
-    retirementAge: 65, // SPEC.md 2.2 デフォルト 65 歳
+    // 働き方期間: 現在年齢〜65歳・会社員の1期間(現行デフォルト相当。#30)
+    workPeriods: [
+      {
+        startAge: 30, // 開始年齢(= デフォルトの現在年齢)
+        endAge: 65, // 65 歳まで働く
+        workStyle: 'employee', // 会社員
+        income: 500, // 年収(額面・万円)
+        raiseRate: 1.0, // SPEC.md 2.2 デフォルト 1.0%
+      },
+    ],
     retirementBonus: 0,
     pension: 150, // 年金受給額(年額・万円)の概算目安値
     other: 0,

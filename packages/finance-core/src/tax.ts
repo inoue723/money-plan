@@ -1,5 +1,5 @@
 /**
- * 税・社会保険料・関連給付の簡易計算(給与所得者を前提。SPEC.md 2.3.2 / 2.3.4 / F-08)。
+ * 税・社会保険料・関連給付の簡易計算(給与所得者・個人事業主。SPEC.md 2.3.2 / 2.3.4 / F-08)。
  *
  * すべて純粋関数・UI 非依存。税率・料率・控除額はハードコードせず、年度別定数テーブル
  * (`constants/tax2026.ts`)から読む。実際の税額とは異なる概算モデルである(SPEC.md 1.4)。
@@ -19,10 +19,13 @@
 
 import {
   BASIC_DEDUCTION,
+  BLUE_RETURN_DEDUCTION,
   CHILD_ALLOWANCE,
   CHILD_ALLOWANCE_THIRD_CHILD_MONTHLY,
   DEPENDENT_DEDUCTION,
   INCOME_TAX_BRACKETS,
+  NATIONAL_HEALTH_INSURANCE,
+  NATIONAL_PENSION,
   PENSION_DEDUCTION,
   RECONSTRUCTION_SURTAX_RATE,
   RESIDENT_TAX,
@@ -59,7 +62,9 @@ const roundDownTo1000 = (yen: number): number => Math.floor(yen / 1000) * 1000;
 function findBracket<T extends { upTo: number }>(brackets: readonly T[], value: number): T {
   const bracket = brackets.find((b) => value <= b.upTo);
   if (!bracket) {
-    throw new Error(`速算表に該当区分がありません(value=${value})。最終区分は upTo:Infinity が必要です。`);
+    throw new Error(
+      `速算表に該当区分がありません(value=${value})。最終区分は upTo:Infinity が必要です。`,
+    );
   }
   return bracket;
 }
@@ -261,6 +266,91 @@ export function calcSalaryTax(input: SalaryTaxInput): SalaryTaxResult {
  */
 export function calcNetSalary(input: SalaryTaxInput): number {
   return calcSalaryTax(input).netSalary;
+}
+
+// ---------------------------------------------------------------------------
+// 個人事業主の税・社会保険料の総合計算
+// ---------------------------------------------------------------------------
+
+/**
+ * 事業所得(円)= 事業所得(売上 − 経費)− 青色申告特別控除。0 未満は 0 とする。
+ */
+export function calcBusinessIncome(businessIncomeYen: number): number {
+  return Math.max(0, businessIncomeYen - BLUE_RETURN_DEDUCTION);
+}
+
+/**
+ * 国民健康保険料(円)を概算する。
+ * 所得割 = (所得 − 基礎控除)× 料率、均等割 = 定額(本人1人分)。賦課限度額で頭打ち。
+ *
+ * @param incomeYen 算定基礎となる所得(円)。青色申告特別控除後の事業所得を渡す。
+ */
+export function calcNationalHealthInsurance(incomeYen: number): number {
+  const { incomeRate, perCapita, deduction, annualCap } = NATIONAL_HEALTH_INSURANCE;
+  const base = Math.max(0, incomeYen - deduction);
+  const premium = base * incomeRate + perCapita;
+  return floorYen(Math.min(premium, annualCap));
+}
+
+/**
+ * 個人事業主の社会保険料(円)= 国民健康保険 + 国民年金(定額)。
+ * 雇用保険・厚生年金には加入しないため 0。`SocialInsuranceBreakdown` の
+ * `health` に国保、`pension` に国民年金を割り当てる。
+ *
+ * @param incomeYen 国保の算定基礎となる所得(円)。青色申告特別控除後の事業所得を渡す。
+ */
+export function calcSelfEmployedSocialInsurance(incomeYen: number): SocialInsuranceBreakdown {
+  const health = calcNationalHealthInsurance(incomeYen);
+  const pension = NATIONAL_PENSION.annualAmount;
+  return { health, pension, employment: 0, total: health + pension };
+}
+
+/** 個人事業主の税・社会保険料計算の入力(金額は万円)。 */
+export interface SelfEmployedTaxInput extends PersonalDeductionOptions {
+  /** 事業所得(売上 − 経費。年額・万円)。 */
+  businessIncome: number;
+}
+
+/** 個人事業主の税・社会保険料計算の結果(金額は万円)。 */
+export interface SelfEmployedTaxResult {
+  /** 控除内訳(healthInsurance = 国民健康保険、pensionInsurance = 国民年金、雇用保険は 0)。 */
+  breakdown: TaxBreakdown;
+  /** 手取り(事業所得 − 所得税 − 住民税 − 国保 − 国民年金)。 */
+  netIncome: number;
+}
+
+/**
+ * 個人事業主(青色申告)の事業所得から、税・社会保険料の内訳と手取りを求める。
+ *
+ * 所得 = 事業所得 − 青色申告特別控除(65万円)。
+ * 課税所得 = 所得 − 社会保険料控除(国保 + 国民年金)− 基礎控除 − 配偶者控除 − 扶養控除。
+ * 所得税・住民税は給与所得者と同じ累進課税ロジックを流用する。
+ */
+export function calcSelfEmployedTax(input: SelfEmployedTaxInput): SelfEmployedTaxResult {
+  const grossYen = toYen(input.businessIncome);
+
+  const businessIncome = calcBusinessIncome(grossYen);
+  const social = calcSelfEmployedSocialInsurance(businessIncome);
+  const deductions = calcPersonalDeductions(input);
+
+  const incomeTaxable = businessIncome - social.total - deductions.incomeTax;
+  const residentTaxable = businessIncome - social.total - deductions.residentTax;
+
+  const incomeTaxYen = calcIncomeTax(incomeTaxable);
+  const residentTaxYen = calcResidentTax(residentTaxable);
+
+  const netYen = grossYen - incomeTaxYen - residentTaxYen - social.total;
+
+  const breakdown: TaxBreakdown = {
+    incomeTax: toManyen(incomeTaxYen),
+    residentTax: toManyen(residentTaxYen),
+    healthInsurance: toManyen(social.health),
+    pensionInsurance: toManyen(social.pension),
+    employmentInsurance: 0,
+    socialInsurance: toManyen(social.total),
+  };
+
+  return { breakdown, netIncome: toManyen(netYen) };
 }
 
 // ---------------------------------------------------------------------------
