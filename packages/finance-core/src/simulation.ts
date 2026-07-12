@@ -25,7 +25,7 @@ import {
   calcChildAllowanceManyen,
   calcPensionTax,
   calcSalaryTax,
-  type SalaryTaxInput,
+  calcSelfEmployedTax,
 } from './tax';
 import type { DependentCategory } from './constants';
 import { initInvestmentState, stepInvestment, type InvestmentState } from './investment';
@@ -35,6 +35,7 @@ import type {
   SimulationInput,
   SimulationResult,
   TaxBreakdown,
+  WorkPeriod,
   YearlyResult,
 } from './types';
 
@@ -87,6 +88,13 @@ const annualLoanPayment = (
   return monthly * 12;
 };
 
+/**
+ * 指定年齢に該当する働き方期間を返す(両端を含む)。
+ * 期間は重複しない前提(UIでバリデーション)。万一重複していた場合は最初の一致を採用する。
+ */
+const activeWorkPeriod = (workPeriods: WorkPeriod[], age: number): WorkPeriod | undefined =>
+  workPeriods.find((p) => age >= p.startAge && age <= p.endAge);
+
 /** 16 歳以上の扶養親族を扶養控除の区分に対応づける(16 歳未満は児童手当対象のため対象外)。 */
 const dependentCategoryForAge = (age: number): DependentCategory | undefined => {
   if (age >= 16 && age <= 18) return 'general'; // 一般扶養(16〜18歳)
@@ -128,6 +136,18 @@ export function runSimulation(input: SimulationInput): SimulationResult {
     education: c.education,
   }));
 
+  // 就労終了・退職金計上の基準年齢(働き方期間から導出)。
+  // - 公的年金: 全就労期間の終了翌年(lastWorkEndAge + 1)から受給する。
+  // - 退職金: 最後の会社員期間の終了翌年に一括計上する(会社員期間が無ければ計上しない)。
+  const { workPeriods } = income;
+  const lastWorkEndAge = workPeriods.reduce((max, p) => Math.max(max, p.endAge), -Infinity);
+  const lastEmployeeEndAge = workPeriods
+    .filter((p) => p.workStyle === 'employee')
+    .reduce((max, p) => Math.max(max, p.endAge), -Infinity);
+  const retirementBonusAge = Number.isFinite(lastEmployeeEndAge)
+    ? lastEmployeeEndAge + 1
+    : undefined;
+
   const results: YearlyResult[] = [];
 
   // 年をまたいで持ち越す state(前年 state → 当年 state の明示的な畳み込み)。
@@ -152,12 +172,15 @@ export function runSimulation(input: SimulationInput): SimulationResult {
     // =========================================================================
     // 1. 収入
     // =========================================================================
-    const working = age < income.retirementAge;
-    const grossSalary = working ? income.salary * growthFactor(income.raiseRate, i) : 0;
+    // 当年の働き方期間(該当なし = 無収入期間)。収入は期間の開始年齢を基準に複利成長する。
+    const workPeriod = activeWorkPeriod(workPeriods, age);
+    const grossSalary = workPeriod
+      ? workPeriod.income * growthFactor(workPeriod.raiseRate, age - workPeriod.startAge)
+      : 0;
     const spouseSalary = family.spouse ? family.spouse.income : 0;
 
-    // 受給開始年齢(= 退職年齢)以降に公的年金を受給する。
-    const receivingPension = age >= income.retirementAge && income.pension > 0;
+    // 公的年金は全就労期間の終了翌年から受給する(働き方期間が無い場合は起点から受給)。
+    const receivingPension = age > lastWorkEndAge && income.pension > 0;
 
     // =========================================================================
     // 2. 税 → 手取り
@@ -171,11 +194,22 @@ export function runSimulation(input: SimulationInput): SimulationResult {
       .filter((c): c is DependentCategory => c !== undefined);
 
     let salaryNet = 0;
-    if (grossSalary > 0) {
-      const selfInput: SalaryTaxInput = { grossSalary, hasSpouseDeduction, dependents };
-      const self = calcSalaryTax(selfInput);
-      taxBreakdown = addTaxBreakdown(taxBreakdown, self.breakdown);
-      salaryNet += self.netSalary;
+    if (workPeriod && grossSalary > 0) {
+      if (workPeriod.workStyle === 'employee') {
+        // 会社員: 給与所得控除 + 健康保険・厚生年金・雇用保険。
+        const self = calcSalaryTax({ grossSalary, hasSpouseDeduction, dependents });
+        taxBreakdown = addTaxBreakdown(taxBreakdown, self.breakdown);
+        salaryNet += self.netSalary;
+      } else {
+        // 個人事業主: 青色申告特別控除 + 国民健康保険・国民年金(雇用保険なし)。
+        const self = calcSelfEmployedTax({
+          businessIncome: grossSalary,
+          hasSpouseDeduction,
+          dependents,
+        });
+        taxBreakdown = addTaxBreakdown(taxBreakdown, self.breakdown);
+        salaryNet += self.netIncome;
+      }
     }
 
     // 配偶者の給与税(本人と同様に計算。配偶者側では控除は付けない)。
@@ -200,8 +234,9 @@ export function runSimulation(input: SimulationInput): SimulationResult {
     const childAllowance = calcChildAllowanceManyen(childAgesThisYear);
 
     // その他収入(手取り扱い): 固定のその他収入 + 一時収入イベント + 退職金。
+    // 退職金は最後の会社員期間の終了翌年に一括計上する。
     let otherIncome = income.other;
-    if (age === income.retirementAge && income.retirementBonus > 0) {
+    if (age === retirementBonusAge && income.retirementBonus > 0) {
       otherIncome += income.retirementBonus;
       eventNames.push('退職金');
     }

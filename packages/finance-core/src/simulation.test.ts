@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { runSimulation } from './simulation';
-import type { EducationPlan, LifeEvent, SimulationInput } from './types';
+import type { EducationPlan, LifeEvent, SimulationInput, WorkPeriod } from './types';
 
 const publicPlan: EducationPlan = {
   preschool: 'public',
@@ -11,14 +11,22 @@ const publicPlan: EducationPlan = {
   university: 'national',
 };
 
+/** 働き方期間を1つ生成し、必要な部分だけ上書きする。 */
+const workPeriod = (overrides: Partial<WorkPeriod> = {}): WorkPeriod => ({
+  startAge: 30,
+  endAge: 64,
+  workStyle: 'employee',
+  income: 500,
+  raiseRate: 1.0,
+  ...overrides,
+});
+
 /** 最小構成の入力を生成し、必要な部分だけ上書きする。 */
 const baseInput = (overrides: Partial<SimulationInput> = {}): SimulationInput => ({
   basic: { currentAge: 30, endAge: 90, savings: 500, investments: 0 },
   family: { children: [] },
   income: {
-    salary: 500,
-    raiseRate: 1.0,
-    retirementAge: 65,
+    workPeriods: [workPeriod()],
     retirementBonus: 0,
     pension: 0,
     other: 0,
@@ -69,9 +77,7 @@ describe('runSimulation', () => {
       baseInput({
         basic: { currentAge: 30, endAge: 50, savings: 100, investments: 0 },
         income: {
-          salary: 300,
-          raiseRate: 0,
-          retirementAge: 65,
+          workPeriods: [workPeriod({ income: 300, raiseRate: 0 })],
           retirementBonus: 0,
           pension: 0,
           other: 0,
@@ -115,9 +121,7 @@ describe('runSimulation', () => {
       baseInput({
         basic: { currentAge: 60, endAge: 75, savings: 1000, investments: 0 },
         income: {
-          salary: 600,
-          raiseRate: 1.0,
-          retirementAge: 65,
+          workPeriods: [workPeriod({ startAge: 60, endAge: 64, income: 600 })],
           retirementBonus: 2000,
           pension: 200,
           other: 0,
@@ -196,6 +200,140 @@ describe('runSimulation', () => {
       expect(b.expense.education).toBeCloseTo(a.expense.education, 6);
       expect(b.income.childAllowance).toBeCloseTo(a.income.childAllowance, 6);
     }
+  });
+
+  it('昇給は期間の開始年齢を基準に期間内で複利適用される', () => {
+    const result = runSimulation(
+      baseInput({
+        income: {
+          workPeriods: [workPeriod({ startAge: 30, endAge: 64, income: 500, raiseRate: 2.0 })],
+          retirementBonus: 0,
+          pension: 0,
+          other: 0,
+        },
+      }),
+    );
+    expect(result.find((y) => y.age === 30)!.income.grossSalary).toBeCloseTo(500, 6);
+    expect(result.find((y) => y.age === 40)!.income.grossSalary).toBeCloseTo(
+      500 * Math.pow(1.02, 10),
+      6,
+    );
+  });
+
+  it('働き方期間の隙間は無収入期間になる(税・社会保険料も 0)', () => {
+    const result = runSimulation(
+      baseInput({
+        income: {
+          workPeriods: [
+            workPeriod({ startAge: 30, endAge: 34 }),
+            workPeriod({ startAge: 40, endAge: 64 }),
+          ],
+          retirementBonus: 0,
+          pension: 0,
+          other: 0,
+        },
+      }),
+    );
+    const gapYear = result.find((y) => y.age === 37)!;
+    expect(gapYear.income.grossSalary).toBe(0);
+    expect(gapYear.income.net).toBe(0);
+    expect(gapYear.tax.socialInsurance).toBe(0);
+
+    // 期間再開後は再び収入がある。
+    expect(result.find((y) => y.age === 40)!.income.grossSalary).toBeCloseTo(500, 6);
+  });
+
+  it('個人事業主期間は国保・国民年金で社会保険料が計算される(雇用保険は 0)', () => {
+    const result = runSimulation(
+      baseInput({
+        income: {
+          workPeriods: [workPeriod({ workStyle: 'selfEmployed' })],
+          retirementBonus: 0,
+          pension: 0,
+          other: 0,
+        },
+      }),
+    );
+    const y = result[0]!;
+    expect(y.income.grossSalary).toBeCloseTo(500, 6);
+    expect(y.tax.pensionInsurance).toBeCloseTo(21.504, 6); // 国民年金 17,920 円 × 12
+    expect(y.tax.healthInsurance).toBeGreaterThan(0); // 国民健康保険
+    expect(y.tax.employmentInsurance).toBe(0); // 雇用保険なし
+    expect(y.income.net).toBeGreaterThan(0);
+    expect(y.income.net).toBeLessThan(y.income.grossSalary);
+  });
+
+  it('会社員→個人事業主の切替で社会保険の内訳が変わる', () => {
+    const result = runSimulation(
+      baseInput({
+        income: {
+          workPeriods: [
+            workPeriod({ startAge: 30, endAge: 39, workStyle: 'employee' }),
+            workPeriod({ startAge: 40, endAge: 64, workStyle: 'selfEmployed' }),
+          ],
+          retirementBonus: 0,
+          pension: 0,
+          other: 0,
+        },
+      }),
+    );
+    const employeeYear = result.find((y) => y.age === 39)!;
+    const selfYear = result.find((y) => y.age === 40)!;
+
+    // 会社員期間: 雇用保険あり・厚生年金(給与比例)。
+    expect(employeeYear.tax.employmentInsurance).toBeGreaterThan(0);
+    // 個人事業主期間: 雇用保険なし・国民年金(定額)。
+    expect(selfYear.tax.employmentInsurance).toBe(0);
+    expect(selfYear.tax.pensionInsurance).toBeCloseTo(21.504, 6);
+  });
+
+  it('退職金は最後の会社員期間の終了翌年に計上される', () => {
+    const result = runSimulation(
+      baseInput({
+        income: {
+          workPeriods: [
+            workPeriod({ startAge: 30, endAge: 39, workStyle: 'employee' }),
+            workPeriod({ startAge: 40, endAge: 64, workStyle: 'selfEmployed' }),
+          ],
+          retirementBonus: 1000,
+          pension: 0,
+          other: 0,
+        },
+      }),
+    );
+    const bonusYear = result.find((y) => y.age === 40)!;
+    expect(bonusYear.income.other).toBeGreaterThanOrEqual(1000);
+    expect(bonusYear.events).toContain('退職金');
+    expect(result.filter((y) => y.events.includes('退職金'))).toHaveLength(1);
+  });
+
+  it('会社員期間が無い場合は退職金を計上しない', () => {
+    const result = runSimulation(
+      baseInput({
+        income: {
+          workPeriods: [workPeriod({ workStyle: 'selfEmployed' })],
+          retirementBonus: 1000,
+          pension: 0,
+          other: 0,
+        },
+      }),
+    );
+    expect(result.some((y) => y.events.includes('退職金'))).toBe(false);
+  });
+
+  it('年金は全就労期間の終了翌年から受給する(個人事業主のみでも同様)', () => {
+    const result = runSimulation(
+      baseInput({
+        income: {
+          workPeriods: [workPeriod({ startAge: 30, endAge: 64, workStyle: 'selfEmployed' })],
+          retirementBonus: 0,
+          pension: 150,
+          other: 0,
+        },
+      }),
+    );
+    expect(result.find((y) => y.age === 64)!.income.pension).toBe(0);
+    expect(result.find((y) => y.age === 65)!.income.pension).toBeGreaterThan(0);
   });
 
   it('積立投資で投資資産が増え、運用益が計上される', () => {
