@@ -2,9 +2,9 @@
  * 数値入力フィールド(共通入力UI。#9)。
  *
  * - 表示は「万円」「%」「歳」などの単位付き。値は number でストアに書き戻す。
- * - 入力途中(空文字・末尾ドットなど)でも編集できるよう、表示テキストはローカル state で保持し、
- *   数値としてパースできたときだけ `onChange` を呼ぶ。
- * - `min` / `max` が指定されていれば blur 時にクランプする(最小限の範囲バリデーション)。
+ * - 入力中は表示テキスト(ローカル state)のみ更新し、ストアへの書き戻しは行わない。
+ *   フォーカスアウト(blur)または Enter キーで確定し、値が変わっていれば `onChange` を呼ぶ(#28)。
+ * - 確定時に `min` / `max` でクランプし、不正入力は 0(クランプ後)にフォールバックする。
  */
 import { useEffect, useState } from 'react';
 
@@ -68,17 +68,18 @@ export function NumberField({
           step={step}
           disabled={disabled}
           onChange={(e) => {
-            const raw = e.target.value;
-            setText(raw);
-            if (raw === '') return;
-            const n = Number(raw);
-            if (!Number.isNaN(n)) onChange(clamp(n, min, max));
+            // 入力中は表示テキストのみ更新する(ストアへの書き戻しは確定時に行う)。
+            setText(e.target.value);
           }}
           onBlur={() => {
             const n = Number(text);
             const next = Number.isNaN(n) ? clamp(0, min, max) : clamp(n, min, max);
             setText(String(next));
             if (next !== value) onChange(next);
+          }}
+          onKeyDown={(e) => {
+            // Enter でも blur と同じ確定処理を走らせる(blur させて onBlur に委譲)。
+            if (e.key === 'Enter') e.currentTarget.blur();
           }}
         />
         {unit && <span className="shrink-0 text-xs text-slate-500">{unit}</span>}
