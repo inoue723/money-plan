@@ -5,7 +5,7 @@
  * 外部への送信は一切行わない。Excel(日本語)での文字化けを避けるため BOM を付与する。
  */
 import type { SimulationResult } from '@money-plan/finance-core';
-import { CSV_COLUMNS } from './yearColumns';
+import { CSV_COLUMNS, truncMan } from './yearColumns';
 
 /** UTF-8 BOM(U+FEFF)。Excel(日本語)が CSV を UTF-8 として認識するために先頭へ付与する。 */
 const BOM = String.fromCharCode(0xfeff);
@@ -22,7 +22,13 @@ function escapeCell(value: string | number): string {
 /** シミュレーション結果を CSV 文字列(ヘッダー付き)に変換する。 */
 export function buildCsv(result: SimulationResult): string {
   const header = CSV_COLUMNS.map((c) => escapeCell(c.label)).join(',');
-  const rows = result.map((r) => CSV_COLUMNS.map((c) => escapeCell(c.get(r))).join(','));
+  const rows = result.map((r) =>
+    CSV_COLUMNS.map((c) => {
+      const v = c.get(r);
+      // 金額列は画面表示と同じ丸め(万円未満切り捨て)に統一する(issue #27)。
+      return escapeCell(typeof v === 'number' ? truncMan(v) : v);
+    }).join(','),
+  );
   return [header, ...rows].join('\r\n');
 }
 

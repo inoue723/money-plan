@@ -6,12 +6,19 @@
  */
 import type { YearlyResult } from '@money-plan/finance-core';
 
-/** 金額(万円)を桁区切り + 小数1桁までで整形する。 */
+/**
+ * 金額(万円)の万円未満を切り捨てる(issue #27)。
+ * 負の値は 0 方向への切り捨て(Math.trunc)とする(例: -831.1 → -831)。
+ * 表示・CSV の丸めはすべてこの関数に統一する(finance-core の計算値は丸めない)。
+ */
+export function truncMan(value: number): number {
+  // Math.trunc(-0.1) は -0 になり「-0」と表示されるため、+0 を足して 0 に正規化する。
+  return Math.trunc(value) + 0;
+}
+
+/** 金額(万円)を万円未満切り捨て + 桁区切りで整形する(issue #27)。 */
 export function formatMan(value: number): string {
-  return value.toLocaleString('ja-JP', {
-    minimumFractionDigits: 0,
-    maximumFractionDigits: 1,
-  });
+  return truncMan(value).toLocaleString('ja-JP');
 }
 
 /** 支出内訳の合計(万円)。 */
