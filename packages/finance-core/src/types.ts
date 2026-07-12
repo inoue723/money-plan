@@ -234,13 +234,24 @@ export interface IncomeBreakdown {
   investmentGain: number;
 }
 
-/** 控除内訳(所得税・住民税・社会保険料。SPEC.md 2.3.4、金額はすべて万円)。 */
+/**
+ * 控除内訳(所得税・住民税・社会保険料。SPEC.md 2.3.4 / F-08、金額はすべて万円)。
+ *
+ * F-08 の年次内訳表示では社会保険料を健康保険・厚生年金・雇用保険に分けて表示するため、
+ * 個別の内訳フィールドを持つ。`socialInsurance` はこれら3つの合計(後方互換のため保持)。
+ */
 export interface TaxBreakdown {
   /** 所得税(復興特別所得税を含む)。 */
   incomeTax: number;
   /** 住民税(所得割 + 均等割)。 */
   residentTax: number;
-  /** 社会保険料(健康保険・厚生年金・雇用保険の合計)。 */
+  /** 健康保険料(被保険者負担分)。 */
+  healthInsurance: number;
+  /** 厚生年金保険料(被保険者負担分)。 */
+  pensionInsurance: number;
+  /** 雇用保険料(被保険者負担分)。 */
+  employmentInsurance: number;
+  /** 社会保険料合計(健康保険 + 厚生年金 + 雇用保険。互換のため保持)。 */
   socialInsurance: number;
 }
 
