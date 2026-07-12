@@ -1,34 +1,41 @@
 ---
 name: implement-issue
 description: >-
-  issues/ ディレクトリの実装チケット(issueファイル)を1件受け取り、mainから作業ブランチを切り、
-  チケットの内容を実装し、Pull Requestを作成するワークフロー。ユーザーが
-  「issues/001-monorepo-setup.md を実装して」「このissueをやって」「#002 に着手して」のように
-  issueファイルやissue番号を指定して実装を依頼したときは、必ずこのskillを使うこと。
+  GitHub上の実装チケット(Issue)を1件受け取り、mainから作業ブランチを切り、
+  Issueの内容を実装し、Pull Requestを作成するワークフロー。ユーザーが
+  「Issue #2 を実装して」「このissueをやって」「#002 に着手して」のように
+  GitHub Issueの番号やタイトルを指定して実装を依頼したときは、必ずこのskillを使うこと。
   issueの実装・着手・チケット消化・PR作成までを一気通貫で行いたい場合に適用する。
 ---
 
 # implement-issue
 
-`issues/` の実装チケットを1件、mainから派生したブランチ上で実装し、Pull Requestを作成するためのワークフロー。
+GitHub Issue を1件、mainから派生したブランチ上で実装し、Pull Requestを作成するためのワークフロー。
 
-このリポジトリでは実装作業を issue ファイル単位で切り出している。このskillは「1 issue = 1 ブランチ = 1 PR」を徹底し、レビューしやすい単位で変更を積み上げるためのもの。
+このリポジトリでは実装作業を GitHub Issue 単位で切り出している。このskillは「1 issue = 1 ブランチ = 1 PR」を徹底し、レビューしやすい単位で変更を積み上げるためのもの。
 
 作業は git worktree 上で行う。これにより、別のissue実装や既存PRのレビューと同じリポジトリを、ブランチ切り替えなしで**並列に**進められる。
 
 ## 対象issueの特定
 
-ユーザーは次のいずれかの形で対象を指定する。まず対象ファイルを1つに確定させる。
+ユーザーは次のいずれかの形で対象を指定する。まず対象issueの番号を1つに確定させる。
 
-- ファイルパス直接指定: `issues/001-monorepo-setup.md`
-- issue番号: `#002`、`002`、「2番目のissue」→ `issues/002-*.md` を探す
-- スラッグ: 「monorepoセットアップのissue」→ ファイル名・見出しから該当を探す
+- issue番号: `#2`、`2`、「issue 2」
+- タイトル・スラッグ: 「monorepoセットアップのissue」→ `gh issue list` でタイトルから該当を探す
 
-複数候補が該当する、または該当が見つからない場合は、`issues/` の一覧を提示してユーザーに確認する。**推測で別のissueを実装し始めないこと。**
+番号が分かれば内容を取得する:
 
-確定したら issue ファイルを読み、特に次を把握する:
+```bash
+gh issue view <番号> --json number,title,body,url,state,labels
+```
 
-- **依存**: 依存する他issueが未完了(=対応するPRが未マージ)なら、その旨を伝えて着手可否をユーザーに確認する。土台が無い状態で実装するとブランチが破綻するため。
+複数候補が該当する、または該当が見つからない場合は、`gh issue list` で一覧を提示してユーザーに確認する。**推測で別のissueを実装し始めないこと。**
+
+対象issueがすでに `state: CLOSED` の場合は、その旨を伝えてユーザーに続行意思を確認する(誤って完了済みissueを再実装しないため)。
+
+取得した issue の本文から、特に次を把握する:
+
+- **依存**: 本文に依存issueの記載(例: 「依存: #1」)があれば、`gh issue view <依存番号> --json state` で状態を確認する。未クローズなら着手可否をユーザーに確認する。土台が無い状態で実装するとブランチが破綻するため。
 - **スコープ(やること/やらないこと)**: 「やらないこと」に挙がった作業には手を出さない。スコープを越える変更はPRを肥大化させ、issue分割の意図を壊す。
 - **完了条件(受け入れ基準)**: これが実装のゴールであり、後で自己検証するチェックリストになる。
 - **技術方針**: SPEC.md や既存コードの規約に沿うこと。迷ったら SPEC.md の該当節を読む。
@@ -47,13 +54,13 @@ description: >-
 git fetch origin
 ```
 
-ブランチ名は issue ファイル名(拡張子を除いたスラッグ)に `feature/` を付ける。worktree はリポジトリ外の兄弟ディレクトリに作り、`origin/main` から新ブランチを切る。
+ブランチ名は issue番号ベースで `feature/<番号>` とする。worktree はリポジトリ外の兄弟ディレクトリに作り、`origin/main` から新ブランチを切る。
 
-- `issues/001-monorepo-setup.md` → ブランチ `feature/001-monorepo-setup`
+- issue `#2` → ブランチ `feature/2`
 
 ```bash
-BRANCH=feature/001-monorepo-setup
-WT=../money-plan-worktrees/001-monorepo-setup
+BRANCH=feature/2
+WT=../money-plan-worktrees/2
 git worktree add -b "$BRANCH" "$WT" origin/main
 ```
 
@@ -92,7 +99,7 @@ PRを出す前に、issue の完了条件を実際に満たしているか検証
 
 ### 4. push と PR 作成
 
-自己検証まで終えたら、確認を挟まずそのまま push して PR を作成してよい。
+自己検証まで終えたら、確認を挟まずそのまま push して PR を作成してよい。PR本文には `Closes #<番号>` を含め、マージ時にissueが自動クローズされるようにする。
 
 ```bash
 git push -u origin "$BRANCH"
@@ -100,11 +107,13 @@ gh pr create --base main --head "$BRANCH" \
   --title "<PRタイトル>" --body "<PR本文>"
 ```
 
-PR タイトルは issue の主題を簡潔に表す(例: `monorepo初期セットアップ (#001)`)。PR 本文は次の構成にする:
+PR タイトルは issue の主題を簡潔に表す(例: `monorepo初期セットアップ (#1)`)。PR 本文は次の構成にする:
 
 ```markdown
 ## 概要
-<このPRで何を実装したか。対応issue: issues/001-monorepo-setup.md>
+<このPRで何を実装したか。対応issue: #<番号>>
+
+Closes #<番号>
 
 ## 変更内容
 - <主要な変更点>
@@ -125,4 +134,4 @@ PR作成後、PRのURLをユーザーに伝えて完了とする。
 
 - 作成したPRのURLを報告する。あわせて、作業した worktree のパス(`$WT`)も伝える。
 - worktree はPRマージ後に不要になる。掃除する場合は `git worktree remove <path>` で削除できる(このskillでは自動削除せず、ユーザーの判断に委ねる)。
-- issue ファイルのステータス欄(`ステータス: Todo`)の更新をユーザーが望むかは、このskillの外の判断とする。求められれば別途対応する。
+- issueは PR 本文の `Closes #<番号>` によりマージ時に自動クローズされる。マージ前に手動でステータスを更新する必要はない。
