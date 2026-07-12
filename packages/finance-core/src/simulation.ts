@@ -152,7 +152,12 @@ export function runSimulation(input: SimulationInput): SimulationResult {
 
   // 年をまたいで持ち越す state(前年 state → 当年 state の明示的な畳み込み)。
   let savings = basic.savings;
-  let investmentState: InvestmentState = initInvestmentState(basic.investments);
+  let investmentState: InvestmentState = initInvestmentState(
+    basic.investments,
+    investment.accounts,
+  );
+  // NISA 上限で積立が停止したことを結果側で可視化するため、最初に停止した年に一度だけ注記する。
+  let nisaCapNotified = false;
 
   for (let i = 0; currentAge + i <= endAge; i++) {
     const age = currentAge + i;
@@ -314,16 +319,23 @@ export function runSimulation(input: SimulationInput): SimulationResult {
     const invStep = stepInvestment(investmentState, { age, investment });
     investmentState = invStep.state;
 
+    // NISA 上限で積立の一部が停止した最初の年に注記する(結果側での可視化。表現は #26 側に委ねる)。
+    if (!nisaCapNotified && invStep.uninvested > 0) {
+      eventNames.push('NISA上限到達');
+      nisaCapNotified = true;
+    }
+
     // =========================================================================
     // 集計(SPEC.md 2.3.1)
     // =========================================================================
     const netIncome = salaryNet + pensionNet + childAllowance; // 手取り収入
+    // 上限で積み立てられなかった分(invStep.uninvested)は積立額に含まれないため、自動的に預金に残る。
     const balance = netIncome + otherIncome - totalExpense - invStep.contribution;
 
     // 預金残高 = 前年 + 年間収支 + 投資取崩額(取崩は運用益課税を差し引いた手取り)。
     savings += balance + (invStep.withdrawal - invStep.tax);
 
-    const investmentValue = invStep.state.value;
+    const investmentValue = invStep.investmentValue;
     const totalAssets = savings + investmentValue;
 
     const incomeBreakdown: IncomeBreakdown = {

@@ -27,7 +27,11 @@ describe('finance-core 疎通', () => {
       },
       expense: { rent: 8, living: 15, insurance: 1, fixed: 2, inflationRate: 1.0 },
       events: [],
-      investment: { monthlyAmount: 3, annualReturn: 3.0, endAge: 65, useNisa: true },
+      investment: {
+        accounts: [
+          { name: 'NISA', accountType: 'nisa', monthlyAmount: 3, annualReturn: 3.0, endAge: 65 },
+        ],
+      },
     };
     const result: SimulationResult = [];
 

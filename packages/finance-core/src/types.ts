@@ -195,18 +195,36 @@ export interface WithdrawalSetting {
   annualAmount: number;
 }
 
-/** F-05 投資設定。 */
-export interface InvestmentInput {
+/** 投資口座の種別。'nisa' は非課税(NISA 上限あり)、'taxable' は課税口座(特定口座等)。 */
+export type AccountType = 'nisa' | 'taxable';
+
+/**
+ * F-05 投資枠(1 つの口座設定)。
+ * 積立額・利回り・積立終了年齢・取り崩し設定を枠ごとに独立して持ち、独立に運用する。
+ */
+export interface InvestmentAccount {
+  /** 枠の名前(例: NISA、特定口座)。表示・識別用。 */
+  name: string;
+  /** 口座種別。'nisa' は非課税(上限あり)、'taxable' は取崩時に運用益へ課税。 */
+  accountType: AccountType;
   /** 毎月の積立額(万円)。デフォルト 0。 */
   monthlyAmount: number;
   /** 想定利回り(年率 %、0〜15)。デフォルト 3.0。 */
   annualReturn: number;
   /** 積立終了年齢(歳)。デフォルトは退職年齢。 */
   endAge: number;
-  /** NISA 利用の有無。有の場合、非課税枠内の運用益を非課税とする。 */
-  useNisa: boolean;
-  /** 取り崩し設定(未設定の場合は undefined)。 */
+  /** 取り崩し設定(枠ごと。未設定の場合は undefined)。 */
   withdrawal?: WithdrawalSetting;
+}
+
+/**
+ * F-05 投資設定。複数の投資枠(口座)のリストとして保持する。
+ * デフォルトは現行相当の 1 枠(NISA)。各枠は独立に運用され、
+ * NISA 枠には制度上の投資上限(生涯 1800 万・年間 360 万)が全 NISA 枠合算で適用される。
+ */
+export interface InvestmentInput {
+  /** 投資枠の一覧。 */
+  accounts: InvestmentAccount[];
 }
 
 /** シミュレーション入力一式(SPEC.md 4.4)。 */
