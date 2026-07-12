@@ -3,6 +3,10 @@
  *
  * 現在年齢 / 終了年齢 / 預金 / 投資資産 / 配偶者有無(有→年齢・収入) /
  * 子ども人数と年齢・進路 / 居住地域 を入力する。値は #8 の setter 経由でストアへ反映する。
+ *
+ * 子どもは「既に生まれている子ども(現在の年齢を入力)」に加えて、
+ * 「将来生まれる予定の子ども(誕生時の本人年齢を入力)」も登録できる(#32)。
+ * ストアには誕生年基準の `bornAtParentAge` で保持する。
  */
 import { useState } from 'react';
 import type { Child } from '@money-plan/finance-core';
@@ -15,13 +19,53 @@ import { DEFAULT_EDUCATION_PLAN } from './educationDefaults';
 
 /** 居住地域(v1では住民税一律のため計算未使用。UI 表示のみ)。 */
 const PREFECTURES = [
-  '北海道', '青森県', '岩手県', '宮城県', '秋田県', '山形県', '福島県',
-  '茨城県', '栃木県', '群馬県', '埼玉県', '千葉県', '東京都', '神奈川県',
-  '新潟県', '富山県', '石川県', '福井県', '山梨県', '長野県', '岐阜県',
-  '静岡県', '愛知県', '三重県', '滋賀県', '京都府', '大阪府', '兵庫県',
-  '奈良県', '和歌山県', '鳥取県', '島根県', '岡山県', '広島県', '山口県',
-  '徳島県', '香川県', '愛媛県', '高知県', '福岡県', '佐賀県', '長崎県',
-  '熊本県', '大分県', '宮崎県', '鹿児島県', '沖縄県',
+  '北海道',
+  '青森県',
+  '岩手県',
+  '宮城県',
+  '秋田県',
+  '山形県',
+  '福島県',
+  '茨城県',
+  '栃木県',
+  '群馬県',
+  '埼玉県',
+  '千葉県',
+  '東京都',
+  '神奈川県',
+  '新潟県',
+  '富山県',
+  '石川県',
+  '福井県',
+  '山梨県',
+  '長野県',
+  '岐阜県',
+  '静岡県',
+  '愛知県',
+  '三重県',
+  '滋賀県',
+  '京都府',
+  '大阪府',
+  '兵庫県',
+  '奈良県',
+  '和歌山県',
+  '鳥取県',
+  '島根県',
+  '岡山県',
+  '広島県',
+  '山口県',
+  '徳島県',
+  '香川県',
+  '愛媛県',
+  '高知県',
+  '福岡県',
+  '佐賀県',
+  '長崎県',
+  '熊本県',
+  '大分県',
+  '宮崎県',
+  '鹿児島県',
+  '沖縄県',
 ];
 
 export function BasicSection() {
@@ -119,12 +163,17 @@ export function BasicSection() {
       {/* 子ども */}
       <div className="flex flex-col gap-2">
         <div className="flex items-center justify-between">
-          <span className="text-xs font-medium text-slate-600">子ども({family.children.length}人)</span>
+          <span className="text-xs font-medium text-slate-600">
+            子ども({family.children.length}人)
+          </span>
           <button
             type="button"
             onClick={() =>
               setFamily({
-                children: [...family.children, { age: 0, education: DEFAULT_EDUCATION_PLAN }],
+                children: [
+                  ...family.children,
+                  { bornAtParentAge: basic.currentAge, education: DEFAULT_EDUCATION_PLAN },
+                ],
               })
             }
             className="rounded-md border border-sky-300 px-2 py-0.5 text-xs font-medium text-sky-600 hover:bg-sky-50"
@@ -132,35 +181,64 @@ export function BasicSection() {
             + 追加
           </button>
         </div>
-        {family.children.map((child, i) => (
-          <div key={i} className="rounded-md border border-slate-200 p-2">
-            <div className="mb-2 flex items-center justify-between gap-2">
-              <div className="w-24">
-                <NumberField
-                  label={`子ども ${i + 1} の年齢`}
-                  value={child.age}
-                  onChange={(v) => updateChild(i, { age: v })}
-                  min={0}
-                  max={30}
-                  unit="歳"
-                />
+        {family.children.map((child, i) => {
+          // bornAtParentAge が現在年齢より大きい = まだ生まれていない(将来生まれる)子ども。
+          const isFuture = child.bornAtParentAge > basic.currentAge;
+          return (
+            <div key={i} className="rounded-md border border-slate-200 p-2">
+              <div className="mb-2 flex items-center justify-between gap-2">
+                <span className="text-xs font-medium text-slate-600">子ども {i + 1}</span>
+                <button
+                  type="button"
+                  onClick={() => setFamily({ children: family.children.filter((_, j) => j !== i) })}
+                  className="rounded-md border border-rose-200 px-2 py-0.5 text-xs text-rose-500 hover:bg-rose-50"
+                >
+                  削除
+                </button>
               </div>
-              <button
-                type="button"
-                onClick={() =>
-                  setFamily({ children: family.children.filter((_, j) => j !== i) })
-                }
-                className="mt-4 rounded-md border border-rose-200 px-2 py-0.5 text-xs text-rose-500 hover:bg-rose-50"
-              >
-                削除
-              </button>
+              <div className="mb-2 grid grid-cols-2 gap-2">
+                <SelectField
+                  label="生まれている?"
+                  value={isFuture ? 'future' : 'born'}
+                  options={[
+                    { value: 'born', label: '既に生まれている' },
+                    { value: 'future', label: '将来生まれる予定' },
+                  ]}
+                  onChange={(v) =>
+                    updateChild(i, {
+                      // 切替時の初期値: 既に生まれている → 0歳、将来 → 来年誕生。
+                      bornAtParentAge: v === 'future' ? basic.currentAge + 1 : basic.currentAge,
+                    })
+                  }
+                />
+                {isFuture ? (
+                  <NumberField
+                    label="誕生時のあなたの年齢"
+                    value={child.bornAtParentAge}
+                    onChange={(v) => updateChild(i, { bornAtParentAge: v })}
+                    min={basic.currentAge + 1}
+                    max={100}
+                    unit="歳"
+                    hint={`${child.bornAtParentAge - basic.currentAge}年後に誕生`}
+                  />
+                ) : (
+                  <NumberField
+                    label="現在の年齢"
+                    value={basic.currentAge - child.bornAtParentAge}
+                    onChange={(v) => updateChild(i, { bornAtParentAge: basic.currentAge - v })}
+                    min={0}
+                    max={30}
+                    unit="歳"
+                  />
+                )}
+              </div>
+              <EducationFields
+                value={child.education}
+                onChange={(education) => updateChild(i, { education })}
+              />
             </div>
-            <EducationFields
-              value={child.education}
-              onChange={(education) => updateChild(i, { education })}
-            />
-          </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );

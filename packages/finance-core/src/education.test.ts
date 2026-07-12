@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
-import { educationCostForAge, totalEducationCost } from './education';
+import { educationCostForAge, totalEducationCost, type ChildAtAge } from './education';
 import { EDUCATION_COST, UNIVERSITY_COST } from './constants/education2026';
-import type { Child, EducationPlan } from './types';
+import type { EducationPlan } from './types';
 
 /** 全区分を公立、大学は国公立にした基準プラン。 */
 const publicPlan: EducationPlan = {
@@ -98,7 +98,7 @@ describe('totalEducationCost — 複数の子の合計', () => {
   });
 
   it('各子の教育費を合算する', () => {
-    const children: Child[] = [
+    const children: ChildAtAge[] = [
       { age: 8, education: publicPlan }, // 小学校・公立
       { age: 16, education: privatePlan }, // 高校・私立
       { age: 25, education: publicPlan }, // 範囲外 → 0
@@ -109,7 +109,7 @@ describe('totalEducationCost — 複数の子の合計', () => {
   });
 
   it('大学生を含む合計', () => {
-    const children: Child[] = [
+    const children: ChildAtAge[] = [
       { age: 19, education: publicPlan }, // 大学・国公立
       { age: 3, education: privatePlan }, // 未就学・私立
     ];

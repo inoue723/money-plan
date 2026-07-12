@@ -1,19 +1,16 @@
 /**
  * F-04 ライフイベントセクション(#9)。
  *
- * 結婚 / 出産 / 住宅購入 / 車購入 / その他一時支出 / その他一時収入 を任意の年に複数登録できる。
+ * 住宅購入 / 車購入 / その他一時支出 / その他一時収入 を任意の年に複数登録できる。
  * ライフイベントは判別可能union(`type`)であり、種別ごとに必要なパラメータ入力欄を出し分ける。
+ * ※将来生まれる子どもは基本情報(F-01)の家族構成で登録する(#32)。
  */
 import type { LifeEvent, LifeEventType } from '@money-plan/finance-core';
 import { useSimulationStore } from '../../stores/simulationStore';
 import { NumberField } from '../../components/NumberField';
 import { SelectField } from '../../components/SelectField';
-import { EducationFields } from './EducationFields';
-import { DEFAULT_EDUCATION_PLAN } from './educationDefaults';
 
 const EVENT_TYPE_OPTIONS: { value: LifeEventType; label: string }[] = [
-  { value: 'marriage', label: '結婚' },
-  { value: 'birth', label: '出産・子ども誕生' },
   { value: 'homePurchase', label: '住宅購入' },
   { value: 'carPurchase', label: '車購入' },
   { value: 'oneTimeExpense', label: 'その他一時支出' },
@@ -23,10 +20,6 @@ const EVENT_TYPE_OPTIONS: { value: LifeEventType; label: string }[] = [
 /** 種別ごとの既定イベントを生成する(種別変更・新規追加時の初期値)。 */
 const createDefaultEvent = (type: LifeEventType, age: number): LifeEvent => {
   switch (type) {
-    case 'marriage':
-      return { type, age, cost: 300, livingCostFactor: 1.3 };
-    case 'birth':
-      return { type, age, education: DEFAULT_EDUCATION_PLAN };
     case 'homePurchase':
       return { type, age, price: 4000, downPayment: 800, loanInterestRate: 1.0, loanTermYears: 35 };
     case 'carPurchase':
@@ -94,7 +87,7 @@ export function EventsSection() {
 
       <button
         type="button"
-        onClick={() => setEvents([...events, createDefaultEvent('marriage', currentAge)])}
+        onClick={() => setEvents([...events, createDefaultEvent('homePurchase', currentAge)])}
         className="rounded-md border border-sky-300 px-2 py-1 text-xs font-medium text-sky-600 hover:bg-sky-50"
       >
         + イベントを追加
@@ -112,34 +105,6 @@ function EventFields({
   onChange: (next: LifeEvent) => void;
 }) {
   switch (event.type) {
-    case 'marriage':
-      return (
-        <div className="grid grid-cols-2 gap-2">
-          <NumberField
-            label="費用"
-            value={event.cost}
-            onChange={(v) => onChange({ ...event, cost: v })}
-            min={0}
-            unit="万円"
-          />
-          <NumberField
-            label="生活費係数"
-            value={event.livingCostFactor}
-            onChange={(v) => onChange({ ...event, livingCostFactor: v })}
-            min={0}
-            step={0.1}
-            unit="倍"
-            hint="以降の生活費に乗算"
-          />
-        </div>
-      );
-    case 'birth':
-      return (
-        <EducationFields
-          value={event.education}
-          onChange={(education) => onChange({ ...event, education })}
-        />
-      );
     case 'homePurchase':
       return (
         <div className="grid grid-cols-2 gap-2">

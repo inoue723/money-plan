@@ -29,10 +29,19 @@ export interface EducationPlan {
   university: UniversityType; // 大学
 }
 
-/** 子ども(教育費・児童手当の計算対象)。 */
+/**
+ * 子ども(教育費・児童手当の計算対象)。
+ *
+ * 「すでに生まれている子ども」と「将来生まれる子ども」の両方を表す。
+ * シミュレーション内部では誕生年基準(`bornAtParentAge`)で統一して扱う。
+ */
 export interface Child {
-  /** シミュレーション起点時点の年齢(歳)。将来の出産は LifeEvent 'birth' で表現する。 */
-  age: number;
+  /**
+   * 誕生時の本人年齢(歳)。
+   * 現在年齢以下なら既に生まれている子ども(現在の子ども年齢 = 現在年齢 − bornAtParentAge)、
+   * 現在年齢より大きければ将来生まれる子ども。
+   */
+  bornAtParentAge: number;
   /** 進路プラン。 */
   education: EducationPlan;
 }
@@ -42,29 +51,12 @@ export interface Child {
 // ---------------------------------------------------------------------------
 
 /** ライフイベントの種別。 */
-export type LifeEventType =
-  'marriage' | 'birth' | 'homePurchase' | 'carPurchase' | 'oneTimeExpense' | 'oneTimeIncome';
+export type LifeEventType = 'homePurchase' | 'carPurchase' | 'oneTimeExpense' | 'oneTimeIncome';
 
 /** 全ライフイベント共通のフィールド。 */
 interface LifeEventBase {
   /** 発生時の本人年齢(歳)。 */
   age: number;
-}
-
-/** 結婚: 一時費用 + 以降の生活費係数変更(SPEC.md 2.2 F-04)。 */
-export interface MarriageEvent extends LifeEventBase {
-  type: 'marriage';
-  /** 一時費用(万円)。 */
-  cost: number;
-  /** 以降の生活費に乗じる係数(例: 1.3)。 */
-  livingCostFactor: number;
-}
-
-/** 出産・子ども誕生: 教育費モデルを自動適用し、児童手当を加算する。 */
-export interface BirthEvent extends LifeEventBase {
-  type: 'birth';
-  /** 生まれる子どもの進路プラン。 */
-  education: EducationPlan;
 }
 
 /** 住宅購入: 頭金を一時支出、以降ローン返済を年次支出に計上し、家賃を 0 にする。 */
@@ -111,12 +103,7 @@ export interface OneTimeIncomeEvent extends LifeEventBase {
 
 /** ライフイベント(判別可能union)。`type` フィールドで種別を判別する。 */
 export type LifeEvent =
-  | MarriageEvent
-  | BirthEvent
-  | HomePurchaseEvent
-  | CarPurchaseEvent
-  | OneTimeExpenseEvent
-  | OneTimeIncomeEvent;
+  HomePurchaseEvent | CarPurchaseEvent | OneTimeExpenseEvent | OneTimeIncomeEvent;
 
 // ---------------------------------------------------------------------------
 // 入力(SPEC.md 4.4 SimulationInput / 2.2)
