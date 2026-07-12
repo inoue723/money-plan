@@ -141,11 +141,11 @@ export const initInvestmentState = (
  */
 const stepAccount = (prev: AccountState, params: AccountStepParams): AccountStepResult => {
   const { account, age, contributionCap } = params;
-  const { accountType, monthlyAmount, annualReturn, endAge, withdrawal } = account;
+  const { accountType, monthlyAmount, annualReturn, startAge, endAge, withdrawal } = account;
 
   // --- 1. 積立(上限でクランプ) -------------------------------------------
-  // 積立終了年齢「以降」は積立しない(= age < endAge のときのみ積立)。
-  const desired = age < endAge ? monthlyAmount * 12 : 0;
+  // 積立開始年齢「以降」かつ終了年齢「未満」の間のみ積立(= startAge <= age < endAge)。
+  const desired = age >= startAge && age < endAge ? monthlyAmount * 12 : 0;
   const contribution = Math.max(0, Math.min(desired, contributionCap));
   const uninvested = desired - contribution;
   const principal = prev.value + contribution;

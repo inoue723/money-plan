@@ -35,7 +35,14 @@ const baseInput = (overrides: Partial<SimulationInput> = {}): SimulationInput =>
   events: [],
   investment: {
     accounts: [
-      { name: 'NISA', accountType: 'nisa', monthlyAmount: 0, annualReturn: 3.0, endAge: 65 },
+      {
+        name: 'NISA',
+        accountType: 'nisa',
+        monthlyAmount: 0,
+        annualReturn: 3.0,
+        startAge: 30,
+        endAge: 65,
+      },
     ],
   },
   ...overrides,
@@ -345,7 +352,14 @@ describe('runSimulation', () => {
       baseInput({
         investment: {
           accounts: [
-            { name: 'NISA', accountType: 'nisa', monthlyAmount: 5, annualReturn: 5.0, endAge: 65 },
+            {
+              name: 'NISA',
+              accountType: 'nisa',
+              monthlyAmount: 5,
+              annualReturn: 5.0,
+              startAge: 30,
+              endAge: 65,
+            },
           ],
         },
       }),
@@ -371,7 +385,14 @@ describe('runSimulation', () => {
         expense: { rent: 0, living: 0, insurance: 0, fixed: 0, inflationRate: 0 },
         investment: {
           accounts: [
-            { name: 'NISA', accountType: 'nisa', monthlyAmount: 40, annualReturn: 0, endAge: 90 },
+            {
+              name: 'NISA',
+              accountType: 'nisa',
+              monthlyAmount: 40,
+              annualReturn: 0,
+              startAge: 30,
+              endAge: 90,
+            },
           ],
         },
       }),

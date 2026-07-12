@@ -29,7 +29,14 @@ describe('finance-core 疎通', () => {
       events: [],
       investment: {
         accounts: [
-          { name: 'NISA', accountType: 'nisa', monthlyAmount: 3, annualReturn: 3.0, endAge: 65 },
+          {
+            name: 'NISA',
+            accountType: 'nisa',
+            monthlyAmount: 3,
+            annualReturn: 3.0,
+            startAge: 30,
+            endAge: 65,
+          },
         ],
       },
     };

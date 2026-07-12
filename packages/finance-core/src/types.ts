@@ -211,6 +211,8 @@ export interface InvestmentAccount {
   monthlyAmount: number;
   /** 想定利回り(年率 %、0〜15)。デフォルト 3.0。 */
   annualReturn: number;
+  /** 積立開始年齢(歳)。この年齢「以降」に積立を開始する。デフォルトは現在年齢。 */
+  startAge: number;
   /** 積立終了年齢(歳)。デフォルトは退職年齢。 */
   endAge: number;
   /** 取り崩し設定(枠ごと。未設定の場合は undefined)。 */

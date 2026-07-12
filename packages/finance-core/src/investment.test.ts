@@ -10,6 +10,7 @@ const makeAccount = (overrides: Partial<InvestmentAccount> = {}): InvestmentAcco
   accountType: 'nisa',
   monthlyAmount: 0,
   annualReturn: 0,
+  startAge: 30,
   endAge: 65,
   ...overrides,
 });
@@ -96,6 +97,24 @@ describe('stepInvestment - 積立終了', () => {
     const beforeEnd = stepInvestment(prev, { age: 64, investment });
     expect(beforeEnd.contribution).toBe(60); // 5 × 12
     expect(beforeEnd.state.accounts[0]!.costBasis).toBeCloseTo(860, 10);
+  });
+
+  it('積立開始年齢より前は積立しない(age < startAge)', () => {
+    const prev: InvestmentState = {
+      accounts: [{ value: 0, costBasis: 0 }],
+      nisaLifetimeCostBasis: 0,
+    };
+    const investment = oneAccount({ monthlyAmount: 5, annualReturn: 0, startAge: 40, endAge: 65 });
+
+    // 開始年齢(40)より前(39)は積立ゼロ。
+    const before = stepInvestment(prev, { age: 39, investment });
+    expect(before.contribution).toBe(0);
+    expect(before.state.accounts[0]!.costBasis).toBe(0);
+
+    // 開始年齢ちょうど(40)から積立が始まる。
+    const atStart = stepInvestment(prev, { age: 40, investment });
+    expect(atStart.contribution).toBe(60); // 5 × 12
+    expect(atStart.state.accounts[0]!.costBasis).toBeCloseTo(60, 10);
   });
 });
 

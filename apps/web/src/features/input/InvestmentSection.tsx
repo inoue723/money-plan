@@ -2,7 +2,7 @@
  * F-05 投資設定セクション(#9 / #33)。
  *
  * 複数の投資枠(口座)を追加・削除・編集できる。枠ごとに 名前 / 種別(NISA・課税口座)/
- * 毎月積立額 / 想定利回り(0〜15%)/ 積立終了年齢 / 取り崩し設定 を入力する。
+ * 毎月積立額 / 想定利回り(0〜15%)/ 積立開始年齢 / 積立終了年齢 / 取り崩し設定 を入力する。
  * NISA 枠には制度上の投資上限(生涯 1800 万・年間 360 万)が全 NISA 枠合算で適用され、
  * 上限超過分は積み立てられず預金に残る(計算は finance-core 側)。
  */
@@ -17,12 +17,13 @@ const ACCOUNT_TYPE_OPTIONS: { value: AccountType; label: string }[] = [
   { value: 'taxable', label: '課税口座(特定口座等)' },
 ];
 
-/** 新規追加時の既定枠(課税口座)。 */
-const createDefaultAccount = (): InvestmentAccount => ({
+/** 新規追加時の既定枠(課税口座)。積立開始年齢は現在年齢を既定にする。 */
+const createDefaultAccount = (currentAge: number): InvestmentAccount => ({
   name: '特定口座',
   accountType: 'taxable',
   monthlyAmount: 0,
   annualReturn: 3.0,
+  startAge: currentAge,
   endAge: 65,
   withdrawal: undefined,
 });
@@ -41,7 +42,7 @@ export function InvestmentSection() {
   };
 
   const addAccount = () => {
-    setInvestment({ accounts: [...accounts, createDefaultAccount()] });
+    setInvestment({ accounts: [...accounts, createDefaultAccount(currentAge)] });
   };
 
   return (
@@ -131,6 +132,14 @@ function AccountFields({
           step={0.1}
           unit="%"
           hint="0〜15%"
+        />
+        <NumberField
+          label="積立開始年齢"
+          value={account.startAge}
+          onChange={(v) => onChange({ ...account, startAge: v })}
+          min={currentAge}
+          max={100}
+          unit="歳"
         />
         <NumberField
           label="積立終了年齢"
