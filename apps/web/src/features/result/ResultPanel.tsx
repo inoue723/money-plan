@@ -1,0 +1,40 @@
+/**
+ * 結果パネル(S-01 右メイン領域)。
+ *
+ * このファイルは後続チケットの空セクションを **合成するだけ** の器。
+ * 後続(#10 / #11)は各セクションファイル内で完結させ、この合成点は極力編集しない方針。
+ *
+ * === セクション合成点(スロット) ===
+ *   <AssetChartSection/>     グラフ: 資産推移      (#10 / features/result/AssetChartSection.tsx)
+ *   <CashflowChartSection/>  グラフ: 収支          (#10 / features/result/CashflowChartSection.tsx)
+ *   <YearDetailSection/>     年次内訳: 選択年の詳細 (#11 / features/result/YearDetailSection.tsx)
+ *   <YearTableSection/>      年次内訳: 全期間テーブル(#11 / features/result/YearTableSection.tsx)
+ */
+import { useSimulationResult } from '../../stores/simulationStore';
+import { AssetChartSection } from './AssetChartSection';
+import { CashflowChartSection } from './CashflowChartSection';
+import { YearDetailSection } from './YearDetailSection';
+import { YearTableSection } from './YearTableSection';
+
+export function ResultPanel() {
+  // 疎通確認用の派生結果。入力変更→即時再計算のパイプラインが動いていることを最小表示する。
+  const result = useSimulationResult();
+
+  return (
+    <div className="flex flex-col gap-4">
+      <div className="flex items-baseline justify-between">
+        <h2 className="text-lg font-semibold text-slate-800">シミュレーション結果</h2>
+        <p className="text-sm text-slate-500">
+          {/* runSimulation の疎通確認: デフォルト入力で N 年分の結果が算出されている */}
+          計算済み: <span className="font-semibold text-slate-700">{result.length}</span> 年分
+        </p>
+      </div>
+
+      {/* --- スロット合成点(後続チケットはここは触らず各セクション内で実装する)--- */}
+      <AssetChartSection />
+      <CashflowChartSection />
+      <YearDetailSection />
+      <YearTableSection />
+    </div>
+  );
+}
