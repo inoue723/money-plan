@@ -5,14 +5,12 @@
  * 後続(#10 / #11)は各セクションファイル内で完結させ、この合成点は極力編集しない方針。
  *
  * === セクション合成点(スロット) ===
- *   <AssetChartSection/>     グラフ: 資産推移      (#10 / features/result/AssetChartSection.tsx)
- *   <CashflowChartSection/>  グラフ: 収支          (#10 / features/result/CashflowChartSection.tsx)
+ *   <SavingsChartSection/>   グラフ: 現預金残高推移 (#29 / features/result/SavingsChartSection.tsx)
  *   <YearDetailSection/>     年次内訳: 選択年の詳細 (#11 / features/result/YearDetailSection.tsx)
  *   <YearTableSection/>      年次内訳: 全期間テーブル(#11 / features/result/YearTableSection.tsx)
  */
 import { useSimulationResult } from '../../stores/simulationStore';
-import { AssetChartSection } from './AssetChartSection';
-import { CashflowChartSection } from './CashflowChartSection';
+import { SavingsChartSection } from './SavingsChartSection';
 import { YearDetailSection } from './YearDetailSection';
 import { YearTableSection } from './YearTableSection';
 
@@ -31,8 +29,7 @@ export function ResultPanel() {
       </div>
 
       {/* --- スロット合成点(後続チケットはここは触らず各セクション内で実装する)--- */}
-      <AssetChartSection />
-      <CashflowChartSection />
+      <SavingsChartSection />
       <YearDetailSection />
       <YearTableSection />
     </div>
