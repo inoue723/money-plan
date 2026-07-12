@@ -98,7 +98,7 @@ const dependentCategoryForAge = (age: number): DependentCategory | undefined => 
 
 /**
  * 各年に評価する「子ども」を正規化した内部表現。
- * `baseAge` はシミュレーション起点(i=0)における年齢で、出産イベントで生まれる子は
+ * `baseAge` はシミュレーション起点(i=0)における年齢で、将来生まれる子は
  * 起点時点で未出生のため負の値になる。当年の年齢は `baseAge + i` で求める。
  */
 interface NormalizedChild {
@@ -122,17 +122,11 @@ export function runSimulation(input: SimulationInput): SimulationResult {
 
   const startYear = new Date().getFullYear();
 
-  // 起点時点で存在する子ども + 出産イベントで生まれる子どもを正規化してまとめる。
-  const children: NormalizedChild[] = [
-    ...family.children.map((c) => ({ baseAge: c.age, education: c.education })),
-    ...events
-      .filter((e) => e.type === 'birth')
-      .map((e) => ({
-        // 出産年(本人 = e.age)に子の年齢が 0 になるよう起点年齢を逆算する。
-        baseAge: currentAge - e.age,
-        education: e.education,
-      })),
-  ];
+  // 子ども一覧を起点年齢基準に正規化する(将来生まれる子は baseAge が負値になる)。
+  const children: NormalizedChild[] = family.children.map((c) => ({
+    baseAge: currentAge - c.bornAtParentAge,
+    education: c.education,
+  }));
 
   const results: YearlyResult[] = [];
 
@@ -149,6 +143,11 @@ export function runSimulation(input: SimulationInput): SimulationResult {
     const childAgesThisYear = children
       .map((c) => c.baseAge + i)
       .filter((childAge) => childAge >= 0);
+
+    // 将来生まれる子がこの年に誕生する場合はイベント名として記録する(i=0 の既存の子は除く)。
+    if (i > 0 && children.some((c) => c.baseAge + i === 0)) {
+      eventNames.push('子ども誕生');
+    }
 
     // =========================================================================
     // 1. 収入
@@ -226,11 +225,8 @@ export function runSimulation(input: SimulationInput): SimulationResult {
       housing = expense.rent * 12 * growthFactor(expense.inflationRate, i);
     }
 
-    // 生活費: 物価上昇を反映し、結婚後は生活費係数を乗じる。
-    const marriageFactor = events
-      .filter((e) => e.type === 'marriage' && e.age <= age)
-      .reduce((factor, e) => (e.type === 'marriage' ? e.livingCostFactor : factor), 1);
-    const living = expense.living * 12 * growthFactor(expense.inflationRate, i) * marriageFactor;
+    // 生活費: 物価上昇を反映する(生活費の変化は支出項目の年齢期間設定で表現する想定)。
+    const living = expense.living * 12 * growthFactor(expense.inflationRate, i);
 
     const education = children.reduce(
       (sum, c) => sum + educationCostForAge(c.education, c.baseAge + i),
@@ -244,15 +240,6 @@ export function runSimulation(input: SimulationInput): SimulationResult {
     let eventExpense = 0;
     for (const e of events) {
       switch (e.type) {
-        case 'marriage':
-          if (e.age === age) {
-            eventExpense += e.cost;
-            eventNames.push('結婚');
-          }
-          break;
-        case 'birth':
-          if (e.age === age) eventNames.push('出産');
-          break;
         case 'homePurchase':
           if (e.age === age) {
             eventExpense += e.downPayment;

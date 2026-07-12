@@ -140,18 +140,62 @@ describe('runSimulation', () => {
     expect(retired.income.pension).toBeGreaterThan(0);
   });
 
-  it('出産イベントで子が生まれ、児童手当と教育費が発生する', () => {
-    const events: LifeEvent[] = [{ type: 'birth', age: 31, education: publicPlan }];
-    const result = runSimulation(baseInput({ events }));
+  it('将来生まれる子どもを追加すると、誕生年以降に児童手当と教育費が発生する', () => {
+    const result = runSimulation(
+      baseInput({
+        family: { children: [{ bornAtParentAge: 31, education: publicPlan }] },
+      }),
+    );
 
     const beforeBirth = result.find((y) => y.age === 30)!;
     const birthYear = result.find((y) => y.age === 31)!;
     const laterYear = result.find((y) => y.age === 38)!; // 子7歳: 小学校
 
     expect(beforeBirth.income.childAllowance).toBe(0);
-    expect(birthYear.events).toContain('出産');
+    expect(beforeBirth.expense.education).toBe(0);
+    expect(birthYear.events).toContain('子ども誕生');
     expect(birthYear.income.childAllowance).toBeGreaterThan(0); // 0歳: 児童手当
     expect(laterYear.expense.education).toBeGreaterThan(0); // 就学後: 教育費
+  });
+
+  it('既に生まれている子ども(bornAtParentAge ≤ 現在年齢)は起点から教育費・児童手当が計上される', () => {
+    // 本人30歳・子5歳(bornAtParentAge = 25)。
+    const result = runSimulation(
+      baseInput({
+        family: { children: [{ bornAtParentAge: 25, education: publicPlan }] },
+      }),
+    );
+
+    const first = result.find((y) => y.age === 30)!;
+    expect(first.income.childAllowance).toBeGreaterThan(0); // 5歳: 児童手当
+    expect(first.expense.education).toBeGreaterThan(0); // 未就学: 教育費
+    expect(first.events).not.toContain('子ども誕生'); // 既存の子は誕生イベント扱いしない
+
+    // 子が19歳(本人44歳)以降は児童手当の対象外。
+    const grown = result.find((y) => y.age === 44)!;
+    expect(grown.income.childAllowance).toBe(0);
+  });
+
+  it('既存の子と将来の子は誕生年基準で同じモデルが適用される(年齢オフセットで一致)', () => {
+    // 本人30歳・子0歳(既存)と、本人32歳で生まれる将来の子は、
+    // 誕生年を起点にすると同じ教育費・児童手当の系列になる。
+    const existing = runSimulation(
+      baseInput({
+        family: { children: [{ bornAtParentAge: 30, education: publicPlan }] },
+      }),
+    );
+    const future = runSimulation(
+      baseInput({
+        family: { children: [{ bornAtParentAge: 32, education: publicPlan }] },
+      }),
+    );
+
+    for (let childAge = 0; childAge <= 22; childAge++) {
+      const a = existing.find((y) => y.age === 30 + childAge)!;
+      const b = future.find((y) => y.age === 32 + childAge)!;
+      expect(b.expense.education).toBeCloseTo(a.expense.education, 6);
+      expect(b.income.childAllowance).toBeCloseTo(a.income.childAllowance, 6);
+    }
   });
 
   it('積立投資で投資資産が増え、運用益が計上される', () => {
@@ -165,20 +209,6 @@ describe('runSimulation', () => {
     expect(result[0]!.investmentValue).toBeGreaterThan(0);
     // 投資資産は増加していく。
     expect(result[10]!.investmentValue).toBeGreaterThan(result[0]!.investmentValue);
-  });
-
-  it('結婚で生活費係数が以降の生活費に反映される', () => {
-    const events: LifeEvent[] = [{ type: 'marriage', age: 32, cost: 300, livingCostFactor: 1.5 }];
-    const withMarriage = runSimulation(baseInput({ events }));
-    const without = runSimulation(baseInput());
-
-    const idx = withMarriage.findIndex((y) => y.age === 33);
-    // 結婚後の生活費は係数分だけ増える。
-    expect(withMarriage[idx]!.expense.living).toBeCloseTo(without[idx]!.expense.living * 1.5, 4);
-    // 結婚年に一時費用。
-    const marryYear = withMarriage.find((y) => y.age === 32)!;
-    expect(marryYear.expense.events).toBeGreaterThanOrEqual(300);
-    expect(marryYear.events).toContain('結婚');
   });
 
   it('通常入力(約72年分)を高速に計算できる', () => {

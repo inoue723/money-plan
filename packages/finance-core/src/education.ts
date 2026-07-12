@@ -12,7 +12,7 @@
  */
 
 import { EDUCATION_COST, UNIVERSITY_COST } from './constants/education2026';
-import type { Child, EducationPlan } from './types';
+import type { EducationPlan } from './types';
 
 /**
  * 学齢期の対応年齢(SPEC.md 2.3.3)。上限は含む(inclusive)。
@@ -52,14 +52,22 @@ export function educationCostForAge(education: EducationPlan, ageThisYear: numbe
   return 0;
 }
 
+/** 対象年における子どもの状態(年齢と進路プラン)。 */
+export interface ChildAtAge {
+  /** 対象年における年齢(歳)。 */
+  age: number;
+  /** 進路プラン。 */
+  education: EducationPlan;
+}
+
 /**
  * 複数の子どもについて、その年の教育費の合計(万円)を返す。
  *
- * 各 `Child` の `age` フィールドを「対象年における年齢」として扱う。
- * 年次ループ側で各年の年齢に補正した `Child` 相当のデータを渡す想定(純粋関数)。
+ * `age` フィールドを「対象年における年齢」として扱う。
+ * 年次ループ側で各年の年齢に補正したデータを渡す想定(純粋関数)。
  *
  * @param children 対象年の年齢を保持した子ども一覧。
  */
-export function totalEducationCost(children: readonly Child[]): number {
+export function totalEducationCost(children: readonly ChildAtAge[]): number {
   return children.reduce((sum, child) => sum + educationCostForAge(child.education, child.age), 0);
 }

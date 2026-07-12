@@ -1,7 +1,7 @@
 /**
  * 進路プラン(EducationPlan)入力(#9)。
  *
- * 子ども(F-01)および出産イベント(F-04 birth)で共通利用する。各学齢期の公立/私立と
+ * 子ども(F-01。既に生まれている子ども・将来生まれる子ども)で利用する。各学齢期の公立/私立と
  * 大学の進路区分を選択し、教育費モデル(SPEC.md 2.3.3)の適用に用いる。
  */
 import type { EducationPlan, SchoolType, UniversityType } from '@money-plan/finance-core';
