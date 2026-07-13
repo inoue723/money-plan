@@ -25,7 +25,15 @@ describe('finance-core 疎通', () => {
         pension: 0,
         other: 0,
       },
-      expense: { rent: 8, living: 15, insurance: 1, fixed: 2, inflationRate: 1.0 },
+      expense: {
+        items: [
+          {
+            name: '家賃',
+            inflationRate: 1.0,
+            periods: [{ startAge: 30, endAge: 90, monthlyAmount: 8 }],
+          },
+        ],
+      },
       events: [],
       investment: {
         accounts: [

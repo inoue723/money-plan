@@ -31,6 +31,7 @@ import type { DependentCategory } from './constants';
 import { initInvestmentState, stepInvestment, type InvestmentState } from './investment';
 import type {
   EducationPlan,
+  ExpenseBreakdown,
   IncomeBreakdown,
   SimulationInput,
   SimulationResult,
@@ -249,32 +250,29 @@ export function runSimulation(input: SimulationInput): SimulationResult {
     // =========================================================================
     // 3. 支出
     // =========================================================================
-    // 住宅購入済みか(頭金支出済みで以降は家賃 0)。
-    const purchasedHome = events.some((e) => e.type === 'homePurchase' && e.age <= age);
+    // 支出項目(#31): 各項目について本人年齢が期間内にある月額 × 12 × 物価上昇係数。
+    // 物価上昇はシミュレーション起点(i=0)からの経過年数 i で項目ごとに複利適用する。
+    const expenseItems = expense.items.map((item) => {
+      const period = item.periods.find((p) => age >= p.startAge && age <= p.endAge);
+      const monthly = period ? period.monthlyAmount : 0;
+      return { name: item.name, amount: monthly * 12 * growthFactor(item.inflationRate, i) };
+    });
+    const itemsTotal = expenseItems.reduce((sum, it) => sum + it.amount, 0);
 
-    // 住居費: 持ち家ならローン返済(返済期間内)、賃貸なら物価上昇を反映した家賃。
-    let housing: number;
-    if (purchasedHome) {
-      housing = events.reduce((sum, e) => {
-        if (e.type !== 'homePurchase') return sum;
-        const withinTerm = age >= e.age && age < e.age + e.loanTermYears;
-        if (!withinTerm) return sum;
-        return sum + annualLoanPayment(e.price, e.downPayment, e.loanInterestRate, e.loanTermYears);
-      }, 0);
-    } else {
-      housing = expense.rent * 12 * growthFactor(expense.inflationRate, i);
-    }
-
-    // 生活費: 物価上昇を反映する(生活費の変化は支出項目の年齢期間設定で表現する想定)。
-    const living = expense.living * 12 * growthFactor(expense.inflationRate, i);
-
+    // 教育費(子どもの進路プランから算出。支出項目とは別枠で維持)。
     const education = children.reduce(
       (sum, c) => sum + educationCostForAge(c.education, c.baseAge + i),
       0,
     );
 
-    const insurance = expense.insurance * 12;
-    const fixed = expense.fixed * 12;
+    // 住宅ローン返済(住宅購入イベント。返済期間内のみ)。
+    // 家賃相当は支出項目側で管理し、二重計上を避けるため家賃項目の終了年齢調整はUIで案内する(#31)。
+    const loan = events.reduce((sum, e) => {
+      if (e.type !== 'homePurchase') return sum;
+      const withinTerm = age >= e.age && age < e.age + e.loanTermYears;
+      if (!withinTerm) return sum;
+      return sum + annualLoanPayment(e.price, e.downPayment, e.loanInterestRate, e.loanTermYears);
+    }, 0);
 
     // ライフイベント費用(一時支出 + 車の維持費・買替)。
     let eventExpense = 0;
@@ -311,7 +309,7 @@ export function runSimulation(input: SimulationInput): SimulationResult {
       }
     }
 
-    const totalExpense = housing + living + education + insurance + fixed + eventExpense;
+    const totalExpense = itemsTotal + education + loan + eventExpense;
 
     // =========================================================================
     // 4. 投資(積立・運用・取崩・課税)
@@ -348,12 +346,10 @@ export function runSimulation(input: SimulationInput): SimulationResult {
       investmentGain: invStep.gain,
     };
 
-    const expenseBreakdown = {
-      housing,
-      living,
+    const expenseBreakdown: ExpenseBreakdown = {
+      items: expenseItems,
       education,
-      insurance,
-      fixed,
+      loan,
       events: eventExpense,
     };
 
