@@ -316,6 +316,8 @@ export interface YearlyResult {
   savings: number;
   /** 投資資産評価額。 */
   investmentValue: number;
+  /** 当年に実際に投資した積立額(全枠合計)。NISA 上限で停止した超過分は含まない。 */
+  investmentContribution: number;
   /** 当年の運用益。 */
   investmentGain: number;
   /** 総資産(預金残高 + 投資資産評価額)。 */

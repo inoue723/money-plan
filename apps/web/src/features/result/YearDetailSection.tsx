@@ -150,6 +150,14 @@ function DetailBody({ current, previous }: { current: YearlyResult; previous?: Y
           </tr>
           <tr className="border-b border-slate-100">
             <th scope="row" className="py-1 text-left font-normal text-slate-600">
+              年間積立額
+            </th>
+            <td className="py-1 text-right tabular-nums text-slate-700">
+              {formatMan(current.investmentContribution)}
+            </td>
+          </tr>
+          <tr className="border-b border-slate-100">
+            <th scope="row" className="py-1 text-left font-normal text-slate-600">
               投資資産
             </th>
             <td className="py-1 text-right tabular-nums text-slate-700">

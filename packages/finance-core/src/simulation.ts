@@ -366,6 +366,7 @@ export function runSimulation(input: SimulationInput): SimulationResult {
       balance,
       savings,
       investmentValue,
+      investmentContribution: invStep.contribution,
       investmentGain: invStep.gain,
       totalAssets,
       events: eventNames,

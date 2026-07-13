@@ -367,6 +367,10 @@ describe('runSimulation', () => {
     // 初年度: 積立 60万 + 運用益。
     expect(result[0]!.income.investmentGain).toBeGreaterThan(0);
     expect(result[0]!.investmentValue).toBeGreaterThan(0);
+    // 年間積立額(全枠合計)が結果に記録される(月5万 × 12 = 60万)。
+    expect(result[0]!.investmentContribution).toBe(60);
+    // 積立終了年齢(65)以降は積立額 0。
+    expect(result.find((y) => y.age === 65)!.investmentContribution).toBe(0);
     // 投資資産は増加していく。
     expect(result[10]!.investmentValue).toBeGreaterThan(result[0]!.investmentValue);
   });
