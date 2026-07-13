@@ -8,6 +8,7 @@
  */
 import { useSimulationStore } from '../../stores/simulationStore';
 import { Accordion } from '../../components/Accordion';
+import { PlanSummary } from '../plan/PlanSummary';
 import { BasicSection } from './BasicSection';
 import { IncomeSection } from './IncomeSection';
 import { ExpenseSection } from './ExpenseSection';
@@ -16,20 +17,11 @@ import { InvestmentSection } from './InvestmentSection';
 
 export function InputPanel() {
   const eventCount = useSimulationStore((s) => s.input.events.length);
-  const resetInput = useSimulationStore((s) => s.resetInput);
 
   return (
     <div className="flex flex-col gap-3">
-      <div className="flex items-center justify-between">
-        <h2 className="text-lg font-semibold text-slate-800">入力</h2>
-        <button
-          type="button"
-          onClick={resetInput}
-          className="rounded-md border border-slate-300 px-2 py-0.5 text-xs text-slate-500 hover:bg-slate-50"
-        >
-          リセット
-        </button>
-      </div>
+      {/* プラン概要(プラン名の編集・変更の保存/破棄)。入力フィールドの上に配置する。 */}
+      <PlanSummary />
 
       <Accordion title="基本情報" defaultOpen>
         <BasicSection />

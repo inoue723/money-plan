@@ -18,8 +18,9 @@
  *   (`savedInput`)と編集中ドラフト(`draftInput`)を持つ。アクティブタブのドラフトは
  *   `input` と常に同期し、既存の setter / 即時再計算パイプラインをそのまま使える。
  * - `draftInput` が `savedInput` と値として異なれば「未保存」(`isTabDirty`)。UI は
- *   タブ名の横に ◯ を表示する。`saveActiveTab`(保存ボタン / Cmd|Ctrl+S)で
- *   アクティブタブの `savedInput` を現在入力で上書きする。
+ *   タブ名の右に未保存マーク(●)を表示する。`saveActiveTab`(「変更を保存」/ Cmd|Ctrl+S)で
+ *   アクティブタブの `savedInput` を現在入力で上書きし、`discardActiveTabChanges`
+ *   (「変更を破棄」)で `savedInput` へ戻す。
  * - `persist` middleware で `tabs` / `activeTabId` / `input` を localStorage に保存する。
  *   保存はローカルのみで、外部送信は一切行わない。`selectedYear` は一時 UI 状態のため
  *   永続化しない(partialize で除外)。
@@ -213,8 +214,6 @@ export interface SimulationState {
   setInvestment: (patch: Partial<InvestmentInput>) => void;
   /** F-04 ライフイベント一覧の置き換え。 */
   setEvents: (events: LifeEvent[]) => void;
-  /** 入力一式をデフォルトへ戻す(アクティブタブのドラフトを更新)。 */
-  resetInput: () => void;
 
   /** 選択年を設定する(#10 のグラフクリック等から)。 */
   setSelectedYear: (year: number | null) => void;
@@ -225,10 +224,12 @@ export interface SimulationState {
   selectTab: (id: string) => void;
   /** タブを閉じる(プラン削除)。最後の 1 枚を閉じたら新しい既定タブを作る。 */
   closeTab: (id: string) => void;
-  /** タブ名を変更する。 */
+  /** タブ名(プラン名)を変更する。名前は全タブでユニークになる。 */
   renameTab: (id: string, name: string) => void;
-  /** アクティブタブを現在入力で上書き保存する(保存ボタン / Cmd|Ctrl+S)。 */
+  /** アクティブタブを現在入力で上書き保存する(変更を保存 / Cmd|Ctrl+S)。 */
   saveActiveTab: () => void;
+  /** アクティブタブの編集内容を破棄し、最後に保存した入力へ戻す(変更を破棄)。 */
+  discardActiveTabChanges: () => void;
 }
 
 /**
@@ -263,8 +264,6 @@ export const useSimulationStore = create<SimulationState>()(
       setInvestment: (patch) =>
         set((s) => withDraft(s, { ...s.input, investment: { ...s.input.investment, ...patch } })),
       setEvents: (events) => set((s) => withDraft(s, { ...s.input, events })),
-      resetInput: () =>
-        set((s) => ({ ...withDraft(s, cloneInput(DEFAULT_INPUT)), selectedYear: null })),
 
       setSelectedYear: (year) => set({ selectedYear: year }),
 
@@ -319,6 +318,14 @@ export const useSimulationStore = create<SimulationState>()(
             t.id === s.activeTabId ? { ...t, savedInput: cloneInput(s.input) } : t,
           ),
         })),
+      discardActiveTabChanges: () =>
+        set((s) => {
+          const tab = s.tabs.find((t) => t.id === s.activeTabId);
+          if (!tab) return {};
+          // 保存済みスナップショットの独立コピーでドラフト・入力を置換する。
+          const restored = cloneInput(tab.savedInput);
+          return { ...withDraft(s, restored), selectedYear: null };
+        }),
     }),
     {
       name: PERSIST_KEY,
