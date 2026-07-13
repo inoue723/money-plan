@@ -9,6 +9,7 @@
 import type { ExpenseItem, ExpensePeriod } from '@money-plan/finance-core';
 import { useSimulationStore } from '../../stores/simulationStore';
 import { NumberField } from '../../components/NumberField';
+import { AgeNumberField } from '../../components/AgeNumberField';
 
 /** 新規項目の既定値(現在年齢〜終了年齢の1期間・月額0)。 */
 const createDefaultItem = (currentAge: number, endAge: number): ExpenseItem => ({
@@ -149,7 +150,7 @@ export function ExpenseSection() {
                 <div key={periodIndex} className="rounded-md bg-slate-50 p-2">
                   {/* 年齢期間(開始・終了)を1段目に。狭いパネルでも桁が見切れないよう2列に留める。 */}
                   <div className="grid grid-cols-2 gap-2">
-                    <NumberField
+                    <AgeNumberField
                       label="開始年齢"
                       value={period.startAge}
                       onChange={(v) => updatePeriod(itemIndex, periodIndex, { startAge: v })}
@@ -157,7 +158,7 @@ export function ExpenseSection() {
                       max={120}
                       unit="歳"
                     />
-                    <NumberField
+                    <AgeNumberField
                       label="終了年齢"
                       value={period.endAge}
                       onChange={(v) => updatePeriod(itemIndex, periodIndex, { endAge: v })}
