@@ -149,6 +149,12 @@ export function runSimulation(input: SimulationInput): SimulationResult {
     ? lastEmployeeEndAge + 1
     : undefined;
 
+  // 家賃(#50)は住宅購入年以降 0 にする(SPEC.md F-04)。最も早い住宅購入年齢を基準にする。
+  const homePurchaseAge = events.reduce(
+    (min, e) => (e.type === 'homePurchase' ? Math.min(min, e.age) : min),
+    Infinity,
+  );
+
   const results: YearlyResult[] = [];
 
   // 年をまたいで持ち越す state(前年 state → 当年 state の明示的な畳み込み)。
@@ -260,6 +266,35 @@ export function runSimulation(input: SimulationInput): SimulationResult {
     });
     const itemsTotal = expenseItems.reduce((sum, it) => sum + it.amount, 0);
 
+    // 家賃(#50): 専用型で計上する。
+    // - 年額 = 月額 × 12 × 物価上昇係数(既存の支出項目と同じルール。物価上昇は起点からの経過年数 i)。
+    // - 更新料: 期間の開始年齢を起点に周期年ごと(開始年は含めない)に「当年の月額(物価上昇適用後)× 月数」を加算。
+    //   期間が変わった(引っ越し)場合は起点をその期間の開始年齢にリセットする(period 単位で判定するため自動的にそうなる)。
+    // - 住宅購入年以降は家賃を 0 にする(二重計上を避ける。ローン返済側で計上)。
+    // 家賃入力が無い(持ち家等)場合は undefined(内訳・CF表で非表示)。
+    let rent: number | undefined;
+    const rentInput = expense.rent;
+    if (rentInput) {
+      if (age >= homePurchaseAge) {
+        rent = 0;
+      } else {
+        const period = rentInput.periods.find((p) => age >= p.startAge && age <= p.endAge);
+        if (period) {
+          const monthly = period.monthlyAmount * growthFactor(rentInput.inflationRate, i);
+          let amount = monthly * 12;
+          if (period.renewal && period.renewal.cycleYears > 0) {
+            const yearsFromStart = age - period.startAge;
+            if (yearsFromStart > 0 && yearsFromStart % period.renewal.cycleYears === 0) {
+              amount += monthly * period.renewal.months;
+            }
+          }
+          rent = amount;
+        } else {
+          rent = 0;
+        }
+      }
+    }
+
     // 教育費(子どもの進路プランから算出。支出項目とは別枠で維持)。
     const education = children.reduce(
       (sum, c) => sum + educationCostForAge(c.education, c.baseAge + i),
@@ -267,7 +302,7 @@ export function runSimulation(input: SimulationInput): SimulationResult {
     );
 
     // 住宅ローン返済(住宅購入イベント。返済期間内のみ)。
-    // 家賃相当は支出項目側で管理し、二重計上を避けるため家賃項目の終了年齢調整はUIで案内する(#31)。
+    // 家賃(#50)は住宅購入年以降 0 になるため、二重計上は自動的に回避される。
     const loan = events.reduce((sum, e) => {
       if (e.type !== 'homePurchase') return sum;
       const withinTerm = age >= e.age && age < e.age + e.loanTermYears;
@@ -310,7 +345,7 @@ export function runSimulation(input: SimulationInput): SimulationResult {
       }
     }
 
-    const totalExpense = itemsTotal + education + loan + eventExpense;
+    const totalExpense = (rent ?? 0) + itemsTotal + education + loan + eventExpense;
 
     // =========================================================================
     // 4. 投資(積立・運用・取崩・課税)
@@ -348,6 +383,7 @@ export function runSimulation(input: SimulationInput): SimulationResult {
     };
 
     const expenseBreakdown: ExpenseBreakdown = {
+      rent,
       items: expenseItems,
       education,
       loan,

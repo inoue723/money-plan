@@ -504,6 +504,192 @@ describe('runSimulation', () => {
     expect(last.savings).toBeGreaterThan(last.investmentValue);
   });
 
+  // -------------------------------------------------------------------------
+  // 家賃(#50): 専用型・更新料・住宅購入連動
+  // -------------------------------------------------------------------------
+
+  it('家賃(rent)が未設定なら expense.rent は undefined(内訳・CF表で非表示)', () => {
+    const y = runSimulation(baseInput())[0]!;
+    expect(y.expense.rent).toBeUndefined();
+  });
+
+  it('家賃の年額は月額 × 12 × 物価上昇係数で計上される', () => {
+    const result = runSimulation(
+      baseInput({
+        expense: {
+          rent: { inflationRate: 2.0, periods: [{ startAge: 30, endAge: 90, monthlyAmount: 10 }] },
+          items: [],
+        },
+      }),
+    );
+    // 起点(i=0)は月額 × 12。
+    expect(result[0]!.expense.rent).toBeCloseTo(120, 6);
+    // 10 年後は 2% 複利。
+    expect(result.find((y) => y.age === 40)!.expense.rent).toBeCloseTo(120 * Math.pow(1.02, 10), 6);
+  });
+
+  it('家賃の期間外(どの期間にも該当しない年齢)は 0 計上', () => {
+    const result = runSimulation(
+      baseInput({
+        expense: {
+          rent: { inflationRate: 0, periods: [{ startAge: 30, endAge: 40, monthlyAmount: 8 }] },
+          items: [],
+        },
+      }),
+    );
+    expect(result.find((y) => y.age === 35)!.expense.rent).toBeCloseTo(96, 6);
+    expect(result.find((y) => y.age === 50)!.expense.rent).toBe(0);
+  });
+
+  it('更新料は開始年齢を起点に周期年ごと(開始年は含めない)に月額×月数を加算する', () => {
+    const result = runSimulation(
+      baseInput({
+        expense: {
+          rent: {
+            inflationRate: 0, // 物価上昇なしで検証を単純化
+            periods: [
+              {
+                startAge: 30,
+                endAge: 90,
+                monthlyAmount: 10,
+                renewal: { cycleYears: 2, months: 1 },
+              },
+            ],
+          },
+          items: [],
+        },
+      }),
+    );
+    const rentAt = (age: number) => result.find((y) => y.age === age)!.expense.rent!;
+    // 開始年(30)は更新料なし。
+    expect(rentAt(30)).toBeCloseTo(120, 6);
+    // 開始+1(31)は更新年でない。
+    expect(rentAt(31)).toBeCloseTo(120, 6);
+    // 開始+2(32)は更新年 → 年額 + 月額 × 1ヶ月。
+    expect(rentAt(32)).toBeCloseTo(120 + 10, 6);
+    // 開始+4(34)も更新年。
+    expect(rentAt(34)).toBeCloseTo(120 + 10, 6);
+  });
+
+  it('更新料は「当年の月額(物価上昇適用後)× 月数」で計上される', () => {
+    const result = runSimulation(
+      baseInput({
+        expense: {
+          rent: {
+            inflationRate: 3.0,
+            periods: [
+              {
+                startAge: 30,
+                endAge: 90,
+                monthlyAmount: 10,
+                renewal: { cycleYears: 2, months: 1 },
+              },
+            ],
+          },
+          items: [],
+        },
+      }),
+    );
+    // 32歳(i=2)の月額 = 10 × 1.03^2。年額 + 更新料(= 当年月額 × 1ヶ月)。
+    const monthly = 10 * Math.pow(1.03, 2);
+    expect(result.find((y) => y.age === 32)!.expense.rent).toBeCloseTo(monthly * 12 + monthly, 6);
+  });
+
+  it('期間が変わると更新料の起点は各期間の開始年齢にリセットされる', () => {
+    const result = runSimulation(
+      baseInput({
+        expense: {
+          rent: {
+            inflationRate: 0,
+            periods: [
+              {
+                startAge: 30,
+                endAge: 34,
+                monthlyAmount: 10,
+                renewal: { cycleYears: 2, months: 1 },
+              },
+              {
+                startAge: 35,
+                endAge: 90,
+                monthlyAmount: 20,
+                renewal: { cycleYears: 2, months: 1 },
+              },
+            ],
+          },
+          items: [],
+        },
+      }),
+    );
+    const rentAt = (age: number) => result.find((y) => y.age === age)!.expense.rent!;
+    // 第2期間の開始年(35)は更新料なし。
+    expect(rentAt(35)).toBeCloseTo(240, 6);
+    // 第2期間の開始+2(37)が更新年(35を起点にリセット)。
+    expect(rentAt(37)).toBeCloseTo(240 + 20, 6);
+    // 第2期間の開始+1(36)は更新年でない。
+    expect(rentAt(36)).toBeCloseTo(240, 6);
+  });
+
+  it('住宅購入年以降は家賃が自動で 0 になる', () => {
+    const events: LifeEvent[] = [
+      {
+        type: 'homePurchase',
+        age: 35,
+        price: 4000,
+        downPayment: 800,
+        loanInterestRate: 1.0,
+        loanTermYears: 30,
+      },
+    ];
+    const result = runSimulation(
+      baseInput({
+        events,
+        expense: {
+          rent: { inflationRate: 0, periods: [{ startAge: 30, endAge: 90, monthlyAmount: 10 }] },
+          items: [],
+        },
+      }),
+    );
+    // 購入前は家賃あり。
+    expect(result.find((y) => y.age === 34)!.expense.rent).toBeCloseTo(120, 6);
+    // 購入年以降は 0(ローン返済側で計上され二重計上を回避)。
+    expect(result.find((y) => y.age === 35)!.expense.rent).toBe(0);
+    expect(result.find((y) => y.age === 40)!.expense.rent).toBe(0);
+    expect(result.find((y) => y.age === 40)!.expense.loan).toBeGreaterThan(0);
+  });
+
+  it('家賃と更新料は支出合計(balance)に反映される', () => {
+    const withRenewal = runSimulation(
+      baseInput({
+        expense: {
+          rent: {
+            inflationRate: 0,
+            periods: [
+              {
+                startAge: 30,
+                endAge: 90,
+                monthlyAmount: 10,
+                renewal: { cycleYears: 2, months: 1 },
+              },
+            ],
+          },
+          items: [],
+        },
+      }),
+    );
+    const noRenewal = runSimulation(
+      baseInput({
+        expense: {
+          rent: { inflationRate: 0, periods: [{ startAge: 30, endAge: 90, monthlyAmount: 10 }] },
+          items: [],
+        },
+      }),
+    );
+    // 更新年(32歳)は更新料分だけ収支が悪化する。
+    const a = withRenewal.find((y) => y.age === 32)!;
+    const b = noRenewal.find((y) => y.age === 32)!;
+    expect(b.balance - a.balance).toBeCloseTo(10, 6);
+  });
+
   it('通常入力(約72年分)を高速に計算できる', () => {
     const input = baseInput({
       basic: { currentAge: 18, endAge: 90, savings: 300, investments: 100 },
