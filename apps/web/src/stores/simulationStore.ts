@@ -168,12 +168,24 @@ const makeTab = (name: string, input: SimulationInput = DEFAULT_INPUT): PlanTab 
   draftInput: cloneInput(input),
 });
 
-/** 既存タブ名と重複しない「プラン N」を返す。 */
+/** 既存タブ名と重複しない「プラン N」を返す(新規タブの初期名。連番)。 */
 const nextTabName = (tabs: PlanTab[]): string => {
   const names = new Set(tabs.map((t) => t.name));
   let n = tabs.length + 1;
   while (names.has(`プラン ${n}`)) n += 1;
   return `プラン ${n}`;
+};
+
+/**
+ * プラン名を他タブと重複しないよう調整する(名前は全タブでユニーク)。
+ * 既に使われていれば「name (2)」「name (3)」… を付す。`selfId` 自身は比較対象外。
+ */
+const uniquePlanName = (name: string, tabs: PlanTab[], selfId: string): string => {
+  const taken = new Set(tabs.filter((t) => t.id !== selfId).map((t) => t.name));
+  if (!taken.has(name)) return name;
+  let n = 2;
+  while (taken.has(`${name} (${n})`)) n += 1;
+  return `${name} (${n})`;
 };
 
 /** 初期タブ(永続化データが無い初回起動時に使う)。 */
@@ -295,7 +307,12 @@ export const useSimulationStore = create<SimulationState>()(
           };
         }),
       renameTab: (id, name) =>
-        set((s) => ({ tabs: s.tabs.map((t) => (t.id === id ? { ...t, name } : t)) })),
+        set((s) => {
+          const trimmed = name.trim();
+          if (!trimmed) return {}; // 空名は無視(元の名前を維持)。
+          const unique = uniquePlanName(trimmed, s.tabs, id);
+          return { tabs: s.tabs.map((t) => (t.id === id ? { ...t, name: unique } : t)) };
+        }),
       saveActiveTab: () =>
         set((s) => ({
           tabs: s.tabs.map((t) =>
@@ -320,12 +337,6 @@ export const useSimulationStore = create<SimulationState>()(
             input: SimulationInput;
             plans?: Array<{ id: string; name: string; input: SimulationInput }>;
           };
-          const planTabs: PlanTab[] = (old.plans ?? []).map((p) => ({
-            id: p.id,
-            name: p.name,
-            savedInput: p.input,
-            draftInput: cloneInput(p.input),
-          }));
           // 旧「現在入力」を先頭のアクティブタブとして残す。
           const active: PlanTab = {
             id: createPlanId(),
@@ -333,7 +344,17 @@ export const useSimulationStore = create<SimulationState>()(
             savedInput: cloneInput(old.input),
             draftInput: old.input,
           };
-          return { input: old.input, tabs: [active, ...planTabs], activeTabId: active.id };
+          // 旧プランを続けて追加。名前は全タブでユニークになるよう調整する。
+          const tabs: PlanTab[] = [active];
+          for (const p of old.plans ?? []) {
+            tabs.push({
+              id: p.id,
+              name: uniquePlanName(p.name, tabs, p.id),
+              savedInput: p.input,
+              draftInput: cloneInput(p.input),
+            });
+          }
+          return { input: old.input, tabs, activeTabId: active.id };
         }
         return persisted as {
           input: SimulationInput;
