@@ -196,8 +196,41 @@ export interface ExpenseItem {
   periods: ExpensePeriod[];
 }
 
-/** F-03 支出情報(#31)。自由に追加できる支出項目のリストとして保持する。 */
+/**
+ * 家賃期間(#50)。引っ越し等で家賃が変わる場合は複数期間で表す。
+ * 本人年齢がこの範囲(両端を含む)にある年に月額を計上する。
+ */
+export interface RentPeriod {
+  /** 開始年齢(本人年齢・歳)。 */
+  startAge: number;
+  /** 終了年齢(この年齢まで計上=両端を含む)。 */
+  endAge: number;
+  /** 月額(万円)。 */
+  monthlyAmount: number;
+  /** 更新料(未設定なら計上なし)。 */
+  renewal?: {
+    /** 何年おきに計上するか(周期年)。 */
+    cycleYears: number;
+    /** その時点の月額の何ヶ月分か。 */
+    months: number;
+  };
+}
+
+/**
+ * 家賃入力(#50)。賃貸の家賃を専用の型として持つ(汎用の ExpenseItem とは別)。
+ * 家賃固有の仕様(更新料・住宅購入イベント連動)を表現する。
+ */
+export interface RentInput {
+  /** 物価上昇率(年率 %)。家賃の月額に複利適用。 */
+  inflationRate: number;
+  /** 家賃期間の一覧(期間の重複は不可。どの期間にも該当しない年齢は計上なし)。 */
+  periods: RentPeriod[];
+}
+
+/** F-03 支出情報(#31 / #50)。家賃(専用型)+ 自由に追加できる支出項目のリスト。 */
 export interface ExpenseInput {
+  /** 家賃(#50)。賃貸でない(持ち家等)場合は未設定。 */
+  rent?: RentInput;
   /** 支出項目の一覧。 */
   items: ExpenseItem[];
 }
@@ -318,6 +351,12 @@ export interface ExpenseItemAmount {
  * 別枠で扱う教育費(education)・住宅ローン返済(loan)・ライフイベント一時支出(events)を持つ。
  */
 export interface ExpenseBreakdown {
+  /**
+   * 家賃の当年年額(#50。月額 × 12 × 物価上昇係数 + 更新料)。
+   * 家賃入力(ExpenseInput.rent)が未設定の場合は undefined(CF表・内訳で非表示)。
+   * 住宅購入年以降は 0。
+   */
+  rent?: number;
   /** 支出項目ごとの年額(入力の items と同順・同数)。 */
   items: ExpenseItemAmount[];
   /** 教育費(子どもの進路プランから算出)。 */

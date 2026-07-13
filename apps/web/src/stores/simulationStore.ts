@@ -10,8 +10,8 @@
  * - 結果は `useSimulationResult()` から取得する。`runSimulation` の呼び出しは
  *   入力の参照が変わったときだけ行い(メモ化)、入力変更→即時再計算のパイプラインを
  *   100ms 以内(SPEC.md 5)で回す前提の実装とする。
- * - `selectedYear`(年次詳細で選択中の年)も保持する。#10(グラフ)がクリックで設定し、
- *   #11(年次内訳)が購読する共有 state。
+ * - `selectedYear`(選択中の年)も保持する。グラフ(#10)のクリックや CF表(#26)の
+ *   西暦ヘッダークリックで設定し、グラフの選択年マーカーと CF表の列ハイライトが購読する共有 state。
  *
  * ## プランタブ / 永続化(issue #12, F-09, SPEC.md 4.1)
  * - プランは「タブ」として複数保持する(`tabs`)。各タブは保存済みスナップショット
@@ -26,7 +26,8 @@
  *   永続化しない(partialize で除外)。
  * - スキーマは `version`(下記 PERSIST_VERSION)を持ち、`migrate` で旧データを変換する
  *   (v1: `{ input, plans }` → v2: `{ input, tabs, activeTabId }`、
- *    v2 → v3: `basic.investments` を廃止し、投資枠ごとの `initialHolding` へ移行)。
+ *    v2 → v3: `basic.investments` を廃止し投資枠ごとの `initialHolding` へ移行し、
+ *    名前が「家賃」の ExpenseItem を家賃専用型 `expense.rent` へ変換)。
  */
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
@@ -38,6 +39,7 @@ import type {
   IncomeInput,
   InvestmentInput,
   LifeEvent,
+  RentInput,
   SimulationInput,
   SimulationResult,
 } from '@money-plan/finance-core';
@@ -73,14 +75,14 @@ export const DEFAULT_INPUT: SimulationInput = {
     other: 0,
   },
   expense: {
+    // 家賃(#50)は専用型で保持する。現行デフォルト値を「現在年齢(30)〜終了年齢(90)」の1期間で表す。
+    rent: {
+      inflationRate: 1.0,
+      periods: [{ startAge: 30, endAge: 90, monthlyAmount: 8 }],
+    },
     // 支出項目(#31)。現行デフォルト値を「現在年齢(30)〜終了年齢(90)」の1期間で表す。
-    // 物価上昇は現行挙動に合わせ、家賃・生活費のみ 1.0%(保険料・その他固定費は 0%)。
+    // 物価上昇は現行挙動に合わせ、生活費のみ 1.0%(保険料・その他固定費は 0%)。
     items: [
-      {
-        name: '家賃',
-        inflationRate: 1.0,
-        periods: [{ startAge: 30, endAge: 90, monthlyAmount: 8 }],
-      },
       {
         name: '生活費',
         inflationRate: 1.0,
@@ -153,7 +155,7 @@ const cloneInput = (input: SimulationInput): SimulationInput =>
     : (JSON.parse(JSON.stringify(input)) as SimulationInput);
 
 /**
- * v2 → v3 の入力マイグレーション。
+ * v2 → v3 の入力マイグレーション(#46)。
  * 旧 `basic.investments`(初期投資資産額の一括入力)を廃止し、先頭の投資枠の
  * `initialHolding`(現在投資額)へ組み入れる。initialHolding が無い旧枠は 0 で補完する。
  * 投資枠が 1 つも無い場合は移行先が無いため初期投資資産は破棄する(旧 engine と同挙動)。
@@ -171,6 +173,36 @@ const migrateInvestmentsToHolding = (input: SimulationInput): SimulationInput =>
   }));
   return { ...old, basic, investment: { ...old.investment, accounts } };
 };
+
+/**
+ * v2 → v3 マイグレーション(#50)。名前が「家賃」の ExpenseItem を家賃専用型(rent)へ変換する。
+ * - 既に rent があれば変換しない。
+ * - 「家賃」項目が無ければ rent は未設定のまま(賃貸でない扱い)。
+ * - 更新料は旧データに存在しないため付与しない。
+ */
+const migrateExpenseRent = (input: SimulationInput): SimulationInput => {
+  const { expense } = input;
+  if (expense.rent) return input;
+  const idx = expense.items.findIndex((it) => it.name === '家賃');
+  if (idx === -1) return input;
+  const rentItem = expense.items[idx]!;
+  const rent: RentInput = {
+    inflationRate: rentItem.inflationRate,
+    periods: rentItem.periods.map((p) => ({
+      startAge: p.startAge,
+      endAge: p.endAge,
+      monthlyAmount: p.monthlyAmount,
+    })),
+  };
+  return {
+    ...input,
+    expense: { rent, items: expense.items.filter((_, i) => i !== idx) },
+  };
+};
+
+/** v2 → v3 の入力マイグレーションを両方(#46 / #50)適用する。両者は別フィールドを扱うため共存できる。 */
+const migrateInputV2toV3 = (input: SimulationInput): SimulationInput =>
+  migrateExpenseRent(migrateInvestmentsToHolding(input));
 
 /** タブの一意 ID を採番する。 */
 const createPlanId = (): string =>
@@ -216,7 +248,7 @@ const INITIAL_TAB = makeTab('プラン 1');
 export interface SimulationState {
   /** 入力一式(唯一の真実。結果はここから派生する)。アクティブタブのドラフトと同期する。 */
   input: SimulationInput;
-  /** 年次詳細で選択中の年(西暦)。未選択は null。#10 が設定し #11 が購読する。 */
+  /** 選択中の年(西暦)。未選択は null。グラフ/CF表がクリックで設定し、双方が購読する。 */
   selectedYear: number | null;
   /** プランタブ一覧(F-09)。localStorage に永続化される。 */
   tabs: PlanTab[];
@@ -236,7 +268,7 @@ export interface SimulationState {
   /** F-04 ライフイベント一覧の置き換え。 */
   setEvents: (events: LifeEvent[]) => void;
 
-  /** 選択年を設定する(#10 のグラフクリック等から)。 */
+  /** 選択年を設定する(グラフのクリックや CF表の西暦ヘッダークリックから)。 */
   setSelectedYear: (year: number | null) => void;
 
   /** 新しいプランタブを追加してアクティブにする。 */
@@ -411,16 +443,16 @@ export const useSimulationStore = create<SimulationState>()(
         }
 
         if (version < 3) {
-          // v2 → v3: basic.investments を廃止し、投資枠ごとの initialHolding へ移行。
-          // 既存の初期投資資産は先頭の投資枠の現在投資額に組み入れる(engine の従来挙動と同位置)。
+          // v2 → v3: 投資枠の initialHolding 移行(#46)と家賃 ExpenseItem → rent 変換(#50)を
+          // まとめて適用する。両者は別フィールドを扱うため共存できる。
           data = {
-            input: migrateInvestmentsToHolding(data.input),
+            ...data,
+            input: migrateInputV2toV3(data.input),
             tabs: data.tabs.map((t) => ({
               ...t,
-              savedInput: migrateInvestmentsToHolding(t.savedInput),
-              draftInput: migrateInvestmentsToHolding(t.draftInput),
+              savedInput: migrateInputV2toV3(t.savedInput),
+              draftInput: migrateInputV2toV3(t.draftInput),
             })),
-            activeTabId: data.activeTabId,
           };
         }
 
