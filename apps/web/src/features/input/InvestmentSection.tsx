@@ -6,7 +6,7 @@
  * NISA 枠には制度上の投資上限(生涯 1800 万・年間 360 万)が全 NISA 枠合算で適用され、
  * 上限超過分は積み立てられず預金に残る(計算は finance-core 側)。
  */
-import type { AccountType, InvestmentAccount } from '@money-plan/finance-core';
+import type { AccountOwner, AccountType, InvestmentAccount } from '@money-plan/finance-core';
 import { NISA_LIFETIME_LIMIT, nisaInitialLifetimeUsage } from '@money-plan/finance-core';
 import { useSimulationStore } from '../../stores/simulationStore';
 import { NumberField } from '../../components/NumberField';
@@ -19,10 +19,18 @@ const ACCOUNT_TYPE_OPTIONS: { value: AccountType; label: string }[] = [
   { value: 'taxable', label: '課税口座(特定口座等)' },
 ];
 
-/** 新規追加時の既定枠(課税口座)。積立開始年齢は現在年齢を既定にする。 */
+const OWNER_OPTIONS: { value: AccountOwner; label: string }[] = [
+  { value: 'self', label: '本人' },
+  { value: 'spouse', label: '配偶者' },
+];
+
+const OWNER_LABEL: Record<AccountOwner, string> = { self: '本人', spouse: '配偶者' };
+
+/** 新規追加時の既定枠(課税口座)。積立開始年齢は現在年齢を既定にする。名義は本人。 */
 const createDefaultAccount = (currentAge: number): InvestmentAccount => ({
   name: '特定口座',
   accountType: 'taxable',
+  owner: 'self',
   initialHolding: 0,
   monthlyAmount: 0,
   annualReturn: 3.0,
@@ -34,6 +42,7 @@ const createDefaultAccount = (currentAge: number): InvestmentAccount => ({
 export function InvestmentSection() {
   const accounts = useSimulationStore((s) => s.input.investment.accounts);
   const currentAge = useSimulationStore((s) => s.input.basic.currentAge);
+  const hasSpouse = useSimulationStore((s) => s.input.family.spouse !== undefined);
   const setInvestment = useSimulationStore((s) => s.setInvestment);
 
   const updateAccount = (index: number, next: InvestmentAccount) => {
@@ -48,10 +57,15 @@ export function InvestmentSection() {
     setInvestment({ accounts: [...accounts, createDefaultAccount(currentAge)] });
   };
 
-  // NISA 枠の初期保有額(現在投資額)の合計。生涯投資枠(1800 万)を消費する扱いのため、
-  // 合計が上限を超える入力は警告する。
-  const nisaInitialTotal = nisaInitialLifetimeUsage(accounts);
-  const nisaInitialOverLimit = nisaInitialTotal > NISA_LIFETIME_LIMIT;
+  // NISA 枠の初期保有額(現在投資額)の合計を名義ごとに集計する(#52)。生涯投資枠(1800 万)は
+  // 名義ごとに独立適用されるため、いずれかの名義で上限を超える入力は名義別に警告する。
+  const nisaInitialUsage = nisaInitialLifetimeUsage(accounts);
+  const overLimitOwners = OWNER_OPTIONS.map((o) => o.value).filter(
+    (owner) => nisaInitialUsage[owner] > NISA_LIFETIME_LIMIT,
+  );
+
+  // 配偶者なしのプランで配偶者名義の枠が残っている場合の警告(family から配偶者を外した後など)。
+  const hasStaleSpouseAccount = !hasSpouse && accounts.some((a) => a.owner === 'spouse');
 
   return (
     <div className="flex flex-col gap-3">
@@ -59,10 +73,20 @@ export function InvestmentSection() {
         <p className="text-[11px] text-slate-400">投資枠はまだありません。</p>
       )}
 
-      {nisaInitialOverLimit && (
-        <p className="rounded-md border border-rose-200 bg-rose-50 px-2 py-1 text-[11px] text-rose-600">
-          NISA 枠の現在投資額の合計が {nisaInitialTotal} 万円で、生涯投資枠の上限（
-          {NISA_LIFETIME_LIMIT} 万円）を超えています。超過分は生涯枠を消費できません。
+      {overLimitOwners.map((owner) => (
+        <p
+          key={owner}
+          className="rounded-md border border-rose-200 bg-rose-50 px-2 py-1 text-[11px] text-rose-600"
+        >
+          {OWNER_LABEL[owner]}名義の NISA 枠の現在投資額の合計が {nisaInitialUsage[owner]} 万円で、
+          生涯投資枠の上限（{NISA_LIFETIME_LIMIT}{' '}
+          万円）を超えています。超過分は生涯枠を消費できません。
+        </p>
+      ))}
+
+      {hasStaleSpouseAccount && (
+        <p className="rounded-md border border-amber-200 bg-amber-50 px-2 py-1 text-[11px] text-amber-700">
+          配偶者名義の投資枠がありますが、このプランには配偶者が設定されていません。名義を本人に変更するか、家族構成で配偶者を追加してください。
         </p>
       )}
 
@@ -71,6 +95,7 @@ export function InvestmentSection() {
           key={i}
           account={account}
           currentAge={currentAge}
+          hasSpouse={hasSpouse}
           onChange={(next) => updateAccount(i, next)}
           onRemove={() => removeAccount(i)}
         />
@@ -91,15 +116,22 @@ export function InvestmentSection() {
 function AccountFields({
   account,
   currentAge,
+  hasSpouse,
   onChange,
   onRemove,
 }: {
   account: InvestmentAccount;
   currentAge: number;
+  hasSpouse: boolean;
   onChange: (next: InvestmentAccount) => void;
   onRemove: () => void;
 }) {
   const withdrawal = account.withdrawal;
+
+  // 配偶者なしのプランでは配偶者名義を選べない。ただし既に配偶者名義の枠(旧データ等)は
+  // 値を表示できるよう選択肢に残す(上位で警告を出す)。
+  const ownerOptions =
+    hasSpouse || account.owner === 'spouse' ? OWNER_OPTIONS : [OWNER_OPTIONS[0]!];
 
   return (
     <div className="rounded-md border border-slate-200 p-2">
@@ -129,6 +161,19 @@ function AccountFields({
           options={ACCOUNT_TYPE_OPTIONS}
           onChange={(v) => onChange({ ...account, accountType: v as AccountType })}
           hint={account.accountType === 'nisa' ? '生涯1800万・年間360万まで' : undefined}
+        />
+        <SelectField
+          label="名義"
+          value={account.owner}
+          options={ownerOptions}
+          onChange={(v) => onChange({ ...account, owner: v as AccountOwner })}
+          hint={
+            !hasSpouse
+              ? '配偶者は家族構成で追加すると選択可'
+              : account.accountType === 'nisa'
+                ? '名義ごとに生涯・年間枠を適用'
+                : undefined
+          }
         />
         <NumberField
           label="現在投資額"

@@ -40,6 +40,7 @@ describe('finance-core 疎通', () => {
           {
             name: 'NISA',
             accountType: 'nisa',
+            owner: 'self',
             initialHolding: 0,
             monthlyAmount: 3,
             annualReturn: 3.0,

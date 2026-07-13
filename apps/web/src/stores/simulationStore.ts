@@ -27,12 +27,14 @@
  * - スキーマは `version`(下記 PERSIST_VERSION)を持ち、`migrate` で旧データを変換する
  *   (v1: `{ input, plans }` → v2: `{ input, tabs, activeTabId }`、
  *    v2 → v3: `basic.investments` を廃止し投資枠ごとの `initialHolding` へ移行し、
- *    名前が「家賃」の ExpenseItem を家賃専用型 `expense.rent` へ変換)。
+ *    名前が「家賃」の ExpenseItem を家賃専用型 `expense.rent` へ変換、
+ *    v3 → v4: 投資枠に名義 `owner` を追加し、既存枠はすべて `'self'`(本人)とする(#52))。
  */
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { runSimulation } from '@money-plan/finance-core';
 import type {
+  AccountOwner,
   BasicInput,
   ExpenseInput,
   FamilyInput,
@@ -107,6 +109,7 @@ export const DEFAULT_INPUT: SimulationInput = {
       {
         name: 'NISA',
         accountType: 'nisa', // NISA 利用(非課税枠内の運用益を非課税)
+        owner: 'self', // 名義。デフォルトは本人(#52)
         initialHolding: 0, // 現在投資額(初期保有額・万円)。デフォルト 0
         monthlyAmount: 0, // SPEC.md 2.2 デフォルト 0
         annualReturn: 3.0, // SPEC.md 2.2 デフォルト 3.0%
@@ -143,7 +146,7 @@ export interface PlanTab {
  * 永続化スキーマのバージョン。`tabs` や入力形状(`SimulationInput`)の構造を
  * 破壊的に変更したら増やし、`persist` の `migrate` で旧データを変換する。
  */
-export const PERSIST_VERSION = 3;
+export const PERSIST_VERSION = 4;
 
 /** localStorage のキー(SPEC.md 4.1: ローカルのみに保存)。 */
 export const PERSIST_KEY = 'money-plan/simulation';
@@ -203,6 +206,21 @@ const migrateExpenseRent = (input: SimulationInput): SimulationInput => {
 /** v2 → v3 の入力マイグレーションを両方(#46 / #50)適用する。両者は別フィールドを扱うため共存できる。 */
 const migrateInputV2toV3 = (input: SimulationInput): SimulationInput =>
   migrateExpenseRent(migrateInvestmentsToHolding(input));
+
+/**
+ * v3 → v4 の入力マイグレーション(#52)。投資枠に名義(owner)を追加する。
+ * 既存枠はすべて本人名義(`'self'`)とする。既に owner を持つ枠はそのまま維持する。
+ */
+const migrateAddOwner = (input: SimulationInput): SimulationInput => ({
+  ...input,
+  investment: {
+    ...input.investment,
+    accounts: input.investment.accounts.map((a) => {
+      const owner = (a as { owner?: AccountOwner }).owner;
+      return { ...a, owner: owner === 'spouse' ? 'spouse' : 'self' };
+    }),
+  },
+});
 
 /** タブの一意 ID を採番する。 */
 const createPlanId = (): string =>
@@ -452,6 +470,19 @@ export const useSimulationStore = create<SimulationState>()(
               ...t,
               savedInput: migrateInputV2toV3(t.savedInput),
               draftInput: migrateInputV2toV3(t.draftInput),
+            })),
+          };
+        }
+
+        if (version < 4) {
+          // v3 → v4: 投資枠に名義(owner)を追加する(#52)。既存枠はすべて 'self'。
+          data = {
+            ...data,
+            input: migrateAddOwner(data.input),
+            tabs: data.tabs.map((t) => ({
+              ...t,
+              savedInput: migrateAddOwner(t.savedInput),
+              draftInput: migrateAddOwner(t.draftInput),
             })),
           };
         }
