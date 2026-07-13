@@ -55,6 +55,46 @@ export interface CashflowSection {
   rows: CashflowRow[];
 }
 
+/** CF表ヘッダの年齢行(配偶者・子ども)の定義。値は表示用の文字列("32歳" / "—")。 */
+export interface AgeHeaderRow {
+  /** 先頭列に表示する項目名(配偶者年齢 / 第1子 …)。 */
+  label: string;
+  /** 各年の表示文字列を返す。配偶者不在・未誕生の年は「—」。 */
+  get: (r: YearlyResult) => string;
+}
+
+/**
+ * CF表の年次ヘッダ付近に表示する年齢行(配偶者・子ども)を組み立てる(#48)。
+ * - 配偶者年齢はいずれかの年に配偶者が存在する場合のみ行を出す(不在なら非表示)。
+ * - 子どもは人数分「第1子」「第2子」…を出す(0 人なら行なし)。未誕生(負値)の年は「—」。
+ * 本人年齢は既存のヘッダ行で表示するためここには含めない。
+ */
+export function buildAgeHeaderRows(result: YearlyResult[]): AgeHeaderRow[] {
+  const rows: AgeHeaderRow[] = [];
+
+  // 配偶者年齢: いずれかの年で spouseAge が定義されていれば表示する。
+  if (result.some((r) => r.spouseAge !== undefined)) {
+    rows.push({
+      label: '配偶者年齢',
+      get: (r) => (r.spouseAge === undefined ? '—' : `${r.spouseAge}歳`),
+    });
+  }
+
+  // 子ども: 人数は全年共通(入力由来で同順・同数)なので先頭年から件数を得る。
+  const childCount = result[0]?.childAges.length ?? 0;
+  for (let k = 0; k < childCount; k++) {
+    rows.push({
+      label: `第${k + 1}子`,
+      get: (r) => {
+        const childAge = r.childAges[k];
+        return childAge === undefined || childAge < 0 ? '—' : `${childAge}歳`;
+      },
+    });
+  }
+
+  return rows;
+}
+
 /** 支出セクションの内訳行を組み立てる(#31)。支出項目は結果から動的に展開する。 */
 function buildExpenseRows(result: YearlyResult[]): CashflowRow[] {
   const rows: CashflowRow[] = [];

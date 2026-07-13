@@ -169,9 +169,12 @@ export function runSimulation(input: SimulationInput): SimulationResult {
     const eventNames: string[] = [];
 
     // --- 当年の子どもの年齢(未出生は負値。0 以上のみ「在籍」) -----------------
-    const childAgesThisYear = children
-      .map((c) => c.baseAge + i)
-      .filter((childAge) => childAge >= 0);
+    // 全子どもの当年年齢(入力と同順・同数。未出生は負値)。CF表の年齢行で使う。
+    const allChildAges = children.map((c) => c.baseAge + i);
+    const childAgesThisYear = allChildAges.filter((childAge) => childAge >= 0);
+
+    // 配偶者の当年年齢(起点年齢 + 経過年数)。配偶者なしなら undefined。
+    const spouseAge = family.spouse ? family.spouse.age + i : undefined;
 
     // 将来生まれる子がこの年に誕生する場合はイベント名として記録する(i=0 の既存の子は除く)。
     if (i > 0 && children.some((c) => c.baseAge + i === 0)) {
@@ -390,6 +393,8 @@ export function runSimulation(input: SimulationInput): SimulationResult {
     results.push({
       year,
       age,
+      spouseAge,
+      childAges: allChildAges,
       income: incomeBreakdown,
       tax: taxBreakdown,
       expense: expenseBreakdown,
