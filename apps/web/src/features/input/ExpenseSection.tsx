@@ -146,41 +146,46 @@ export function ExpenseSection() {
             <p className="mb-1 text-[11px] font-medium text-slate-500">年齢期間ごとの月額</p>
             <div className="flex flex-col gap-2">
               {item.periods.map((period, periodIndex) => (
-                <div
-                  key={periodIndex}
-                  className="grid grid-cols-[1fr_1fr_1fr_auto] items-end gap-2 rounded-md bg-slate-50 p-2"
-                >
-                  <NumberField
-                    label="開始年齢"
-                    value={period.startAge}
-                    onChange={(v) => updatePeriod(itemIndex, periodIndex, { startAge: v })}
-                    min={0}
-                    max={120}
-                    unit="歳"
-                  />
-                  <NumberField
-                    label="終了年齢"
-                    value={period.endAge}
-                    onChange={(v) => updatePeriod(itemIndex, periodIndex, { endAge: v })}
-                    min={0}
-                    max={120}
-                    unit="歳"
-                  />
-                  <NumberField
-                    label="月額"
-                    value={period.monthlyAmount}
-                    onChange={(v) => updatePeriod(itemIndex, periodIndex, { monthlyAmount: v })}
-                    min={0}
-                    unit="万円"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => removePeriod(itemIndex, periodIndex)}
-                    disabled={item.periods.length <= 1}
-                    className="mb-1 rounded-md border border-rose-200 px-2 py-1 text-xs text-rose-500 hover:bg-rose-50 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-300"
-                  >
-                    削除
-                  </button>
+                <div key={periodIndex} className="rounded-md bg-slate-50 p-2">
+                  {/* 年齢期間(開始・終了)を1段目に。狭いパネルでも桁が見切れないよう2列に留める。 */}
+                  <div className="grid grid-cols-2 gap-2">
+                    <NumberField
+                      label="開始年齢"
+                      value={period.startAge}
+                      onChange={(v) => updatePeriod(itemIndex, periodIndex, { startAge: v })}
+                      min={0}
+                      max={120}
+                      unit="歳"
+                    />
+                    <NumberField
+                      label="終了年齢"
+                      value={period.endAge}
+                      onChange={(v) => updatePeriod(itemIndex, periodIndex, { endAge: v })}
+                      min={0}
+                      max={120}
+                      unit="歳"
+                    />
+                  </div>
+                  {/* 月額は2段目に単独で置き、削除ボタンと横並び。月額入力に十分な幅を確保する。 */}
+                  <div className="mt-2 flex items-end gap-2">
+                    <div className="flex-1">
+                      <NumberField
+                        label="月額"
+                        value={period.monthlyAmount}
+                        onChange={(v) => updatePeriod(itemIndex, periodIndex, { monthlyAmount: v })}
+                        min={0}
+                        unit="万円"
+                      />
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => removePeriod(itemIndex, periodIndex)}
+                      disabled={item.periods.length <= 1}
+                      className="mb-1 shrink-0 rounded-md border border-rose-200 px-2 py-1 text-xs text-rose-500 hover:bg-rose-50 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-300"
+                    >
+                      削除
+                    </button>
+                  </div>
                 </div>
               ))}
             </div>

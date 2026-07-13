@@ -20,3 +20,18 @@ body {
 #root {
   min-height: 100vh;
 }
+
+/*
+ * 数値入力(NumberField)のスピンボタンを非表示にする。
+ * 狭い入力欄(支出項目の年齢期間グリッド等)でスピンボタンが幅を占有し、
+ * 2 桁以上の値が見切れる問題を防ぐ。
+ */
+input[type='number']::-webkit-outer-spin-button,
+input[type='number']::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+input[type='number'] {
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
