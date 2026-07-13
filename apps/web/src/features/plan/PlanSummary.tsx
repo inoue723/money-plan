@@ -5,6 +5,7 @@
  * - プラン名をここで編集する(タブのダブルクリック編集は廃止)。名前は全タブでユニーク。
  * - 「変更を保存」でアクティブタブを上書き保存、「変更を破棄」で最後の保存内容へ戻す。
  *   どちらも未保存の変更があるときのみ有効。Cmd+S(Windows は Ctrl+S)でも保存できる。
+ * - 「複製」で現在のプランを複製し、複製タブをアクティブにする(#45)。
  *
  * 保存先はブラウザの localStorage のみ(ストアの persist 経由)。外部送信はしない。
  */
@@ -17,6 +18,7 @@ export function PlanSummary() {
   const renameTab = useSimulationStore((s) => s.renameTab);
   const saveActiveTab = useSimulationStore((s) => s.saveActiveTab);
   const discardActiveTabChanges = useSimulationStore((s) => s.discardActiveTabChanges);
+  const duplicateTab = useSimulationStore((s) => s.duplicateTab);
 
   const activeTab = tabs.find((t) => t.id === activeTabId);
   const dirty = activeTab ? isTabDirty(activeTab) : false;
@@ -90,6 +92,14 @@ export function PlanSummary() {
           title="最後に保存した内容へ戻す"
         >
           変更を破棄
+        </button>
+        <button
+          type="button"
+          onClick={() => duplicateTab(activeTabId)}
+          className="shrink-0 whitespace-nowrap rounded-md border border-slate-300 px-3 py-1 text-sm text-slate-600 hover:bg-slate-50"
+          title="このプランを複製して新しいタブを開く"
+        >
+          複製
         </button>
         {dirty && (
           <span className="truncate text-xs text-sky-600" title="未保存の変更があります">
