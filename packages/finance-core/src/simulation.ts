@@ -26,6 +26,7 @@ import {
   calcPensionTax,
   calcSalaryTax,
   calcSelfEmployedTax,
+  type PersonalDeductionOptions,
 } from './tax';
 import type { DependentCategory } from './constants';
 import { initInvestmentState, stepInvestment, type InvestmentState } from './investment';
@@ -33,6 +34,7 @@ import type {
   EducationPlan,
   ExpenseBreakdown,
   IncomeBreakdown,
+  IncomeInput,
   SimulationInput,
   SimulationResult,
   TaxBreakdown,
@@ -116,6 +118,111 @@ interface NormalizedChild {
 }
 
 // ---------------------------------------------------------------------------
+// 1 人分(本人 / 配偶者)の収入・税計算(#49)
+// ---------------------------------------------------------------------------
+
+/**
+ * 1 人分(本人 or 配偶者)の就労プランから導出した基準年齢。
+ * 働き方期間は各年で参照するため、退職金・年金の基準年齢はループ前に一度だけ計算しておく。
+ */
+interface PersonPlan {
+  /** 収入情報(本人と配偶者で同一構造)。 */
+  income: IncomeInput;
+  /** 全就労期間の終了年齢の最大値。公的年金はこの翌年から受給する。 */
+  lastWorkEndAge: number;
+  /** 退職金の計上年齢(最後の会社員期間の終了翌年)。会社員期間が無ければ undefined。 */
+  retirementBonusAge: number | undefined;
+}
+
+/** 収入情報から退職金・年金の基準年齢を求め、`PersonPlan` を構築する。 */
+const buildPersonPlan = (income: IncomeInput): PersonPlan => {
+  const { workPeriods } = income;
+  const lastWorkEndAge = workPeriods.reduce((max, p) => Math.max(max, p.endAge), -Infinity);
+  const lastEmployeeEndAge = workPeriods
+    .filter((p) => p.workStyle === 'employee')
+    .reduce((max, p) => Math.max(max, p.endAge), -Infinity);
+  const retirementBonusAge = Number.isFinite(lastEmployeeEndAge)
+    ? lastEmployeeEndAge + 1
+    : undefined;
+  return { income, lastWorkEndAge, retirementBonusAge };
+};
+
+/** 1 人分の当年収入・税の計算結果(金額はすべて万円)。 */
+interface PersonYearIncome {
+  /** 当年の額面収入(会社員は額面給与、個人事業主は事業所得)。就労なしは 0。 */
+  grossSalary: number;
+  /** 給与・事業の手取り。 */
+  salaryNet: number;
+  /** 公的年金の手取り(受給前は 0)。 */
+  pensionNet: number;
+  /** その他収入(手取り扱い。固定その他 + 当年の退職金)。 */
+  otherIncome: number;
+  /** 所得税・住民税・社会保険料の内訳(給与/事業 + 年金)。 */
+  tax: TaxBreakdown;
+  /** 当年に退職金を計上したか(イベント名表示用)。 */
+  retiredThisYear: boolean;
+}
+
+/**
+ * 1 人分(本人 or 配偶者)の当年収入・税・社会保険料を計算する。
+ *
+ * 会社員/個人事業主の判定・税計算・年金受給は本人と配偶者で完全に同一のロジックで、
+ * 渡された `age`(本人年齢 or 配偶者年齢)を基準に適用する。人的控除(`deduction`:
+ * 配偶者控除・扶養控除)は本人にのみ適用し、配偶者側は空オブジェクトで呼び出す。
+ */
+const calcPersonYearIncome = (
+  plan: PersonPlan,
+  age: number,
+  deduction: PersonalDeductionOptions,
+): PersonYearIncome => {
+  const { income, lastWorkEndAge, retirementBonusAge } = plan;
+
+  // 当年の働き方期間(該当なし = 無収入期間)。収入は期間の開始年齢を基準に複利成長する。
+  const workPeriod = activeWorkPeriod(income.workPeriods, age);
+  const grossSalary = workPeriod
+    ? workPeriod.income * growthFactor(workPeriod.raiseRate, age - workPeriod.startAge)
+    : 0;
+
+  let tax = emptyTaxBreakdown();
+  let salaryNet = 0;
+  if (workPeriod && grossSalary > 0) {
+    if (workPeriod.workStyle === 'employee') {
+      // 会社員: 給与所得控除 + 健康保険・厚生年金・雇用保険。
+      const r = calcSalaryTax({ grossSalary, age, ...deduction });
+      tax = addTaxBreakdown(tax, r.breakdown);
+      salaryNet += r.netSalary;
+    } else {
+      // 個人事業主: 青色申告特別控除 + 国民健康保険・国民年金(雇用保険なし)。
+      const r = calcSelfEmployedTax({ businessIncome: grossSalary, age, ...deduction });
+      tax = addTaxBreakdown(tax, r.breakdown);
+      salaryNet += r.netIncome;
+    }
+  }
+
+  // 公的年金は全就労期間の終了翌年から受給する(働き方期間が無い場合は起点から受給)。
+  let pensionNet = 0;
+  if (age > lastWorkEndAge && income.pension > 0) {
+    const pensionTax = calcPensionTax({ pension: income.pension, age, ...deduction });
+    tax = addTaxBreakdown(tax, {
+      ...emptyTaxBreakdown(),
+      incomeTax: pensionTax.incomeTax,
+      residentTax: pensionTax.residentTax,
+    });
+    pensionNet = pensionTax.netPension;
+  }
+
+  // その他収入(手取り扱い): 固定のその他収入 + 退職金(最後の会社員期間の終了翌年)。
+  let otherIncome = income.other;
+  let retiredThisYear = false;
+  if (age === retirementBonusAge && income.retirementBonus > 0) {
+    otherIncome += income.retirementBonus;
+    retiredThisYear = true;
+  }
+
+  return { grossSalary, salaryNet, pensionNet, otherIncome, tax, retiredThisYear };
+};
+
+// ---------------------------------------------------------------------------
 // 本体
 // ---------------------------------------------------------------------------
 
@@ -137,17 +244,11 @@ export function runSimulation(input: SimulationInput): SimulationResult {
     education: c.education,
   }));
 
-  // 就労終了・退職金計上の基準年齢(働き方期間から導出)。
-  // - 公的年金: 全就労期間の終了翌年(lastWorkEndAge + 1)から受給する。
-  // - 退職金: 最後の会社員期間の終了翌年に一括計上する(会社員期間が無ければ計上しない)。
-  const { workPeriods } = income;
-  const lastWorkEndAge = workPeriods.reduce((max, p) => Math.max(max, p.endAge), -Infinity);
-  const lastEmployeeEndAge = workPeriods
-    .filter((p) => p.workStyle === 'employee')
-    .reduce((max, p) => Math.max(max, p.endAge), -Infinity);
-  const retirementBonusAge = Number.isFinite(lastEmployeeEndAge)
-    ? lastEmployeeEndAge + 1
-    : undefined;
+  // 本人・配偶者(#49)の就労プラン(退職金・年金の基準年齢)をループ前に構築する。
+  // 配偶者の収入は本人と同等の構造(IncomeInput)で、配偶者年齢を基準に同じロジックを適用する。
+  const selfPlan = buildPersonPlan(income);
+  const spousePlan = family.spouse ? buildPersonPlan(family.spouse.income) : undefined;
+  const spouseBaseAge = family.spouse?.age;
 
   // 家賃(#50)は住宅購入年以降 0 にする(SPEC.md F-04)。最も早い住宅購入年齢を基準にする。
   const homePurchaseAge = events.reduce(
@@ -179,77 +280,39 @@ export function runSimulation(input: SimulationInput): SimulationResult {
     }
 
     // =========================================================================
-    // 1. 収入
+    // 1. 収入 + 2. 税 → 手取り(本人・配偶者)
     // =========================================================================
-    // 当年の働き方期間(該当なし = 無収入期間)。収入は期間の開始年齢を基準に複利成長する。
-    const workPeriod = activeWorkPeriod(workPeriods, age);
-    const grossSalary = workPeriod
-      ? workPeriod.income * growthFactor(workPeriod.raiseRate, age - workPeriod.startAge)
-      : 0;
-    const spouseSalary = family.spouse ? family.spouse.income : 0;
-
-    // 公的年金は全就労期間の終了翌年から受給する(働き方期間が無い場合は起点から受給)。
-    const receivingPension = age > lastWorkEndAge && income.pension > 0;
-
-    // =========================================================================
-    // 2. 税 → 手取り
-    // =========================================================================
-    let taxBreakdown = emptyTaxBreakdown();
+    // 配偶者(#49)の当年収入・税を先に計算する。配偶者控除の判定に配偶者の当年額面収入を
+    // 使うため、本人より先に評価する。配偶者側では人的控除は付けない(空オブジェクト)。
+    const spouseAge = spouseBaseAge !== undefined ? spouseBaseAge + i : undefined;
+    const spouseYear =
+      spousePlan && spouseAge !== undefined
+        ? calcPersonYearIncome(spousePlan, spouseAge, {})
+        : undefined;
+    const spouseSalary = spouseYear ? spouseYear.grossSalary : 0;
 
     // 本人の給与税(配偶者控除・扶養控除を反映)。
-    const hasSpouseDeduction = family.spouse !== undefined && family.spouse.income <= 103;
+    // 配偶者控除は配偶者の当年額面収入が 103 万円以下のとき適用する(#49)。
+    const hasSpouseDeduction = spouseYear !== undefined && spouseYear.grossSalary <= 103;
     const dependents = childAgesThisYear
       .map(dependentCategoryForAge)
       .filter((c): c is DependentCategory => c !== undefined);
 
-    let salaryNet = 0;
-    if (workPeriod && grossSalary > 0) {
-      if (workPeriod.workStyle === 'employee') {
-        // 会社員: 給与所得控除 + 健康保険・厚生年金・雇用保険。
-        const self = calcSalaryTax({ grossSalary, age, hasSpouseDeduction, dependents });
-        taxBreakdown = addTaxBreakdown(taxBreakdown, self.breakdown);
-        salaryNet += self.netSalary;
-      } else {
-        // 個人事業主: 青色申告特別控除 + 国民健康保険・国民年金(雇用保険なし)。
-        const self = calcSelfEmployedTax({
-          businessIncome: grossSalary,
-          age,
-          hasSpouseDeduction,
-          dependents,
-        });
-        taxBreakdown = addTaxBreakdown(taxBreakdown, self.breakdown);
-        salaryNet += self.netIncome;
-      }
-    }
+    const selfYear = calcPersonYearIncome(selfPlan, age, { hasSpouseDeduction, dependents });
+    const grossSalary = selfYear.grossSalary;
 
-    // 配偶者の給与税(本人と同様に計算。配偶者側では控除は付けない)。
-    if (spouseSalary > 0) {
-      const spouse = calcSalaryTax({ grossSalary: spouseSalary });
-      taxBreakdown = addTaxBreakdown(taxBreakdown, spouse.breakdown);
-      salaryNet += spouse.netSalary;
-    }
-
-    // 公的年金の手取り(公的年金等控除を適用)。
-    let pensionNet = 0;
-    if (receivingPension) {
-      const pensionTax = calcPensionTax({ pension: income.pension, age, hasSpouseDeduction });
-      taxBreakdown = addTaxBreakdown(taxBreakdown, {
-        ...emptyTaxBreakdown(),
-        incomeTax: pensionTax.incomeTax,
-        residentTax: pensionTax.residentTax,
-      });
-      pensionNet = pensionTax.netPension;
-    }
+    // 本人 + 配偶者を合算する。控除内訳・手取り・年金手取りはそれぞれ両者の和とする。
+    const taxBreakdown = spouseYear ? addTaxBreakdown(selfYear.tax, spouseYear.tax) : selfYear.tax;
+    const salaryNet = selfYear.salaryNet + (spouseYear ? spouseYear.salaryNet : 0);
+    const pensionNet = selfYear.pensionNet + (spouseYear ? spouseYear.pensionNet : 0);
 
     const childAllowance = calcChildAllowanceManyen(childAgesThisYear);
 
-    // その他収入(手取り扱い): 固定のその他収入 + 一時収入イベント + 退職金。
-    // 退職金は最後の会社員期間の終了翌年に一括計上する。
-    let otherIncome = income.other;
-    if (age === retirementBonusAge && income.retirementBonus > 0) {
-      otherIncome += income.retirementBonus;
-      eventNames.push('退職金');
-    }
+    // その他収入(手取り扱い): 本人・配偶者の固定その他 + 退職金 + 一時収入イベント。
+    // 退職金は各人の最後の会社員期間の終了翌年に一括計上する。
+    let otherIncome = selfYear.otherIncome + (spouseYear ? spouseYear.otherIncome : 0);
+    if (selfYear.retiredThisYear) eventNames.push('退職金');
+    if (spouseYear?.retiredThisYear) eventNames.push('配偶者退職金');
 
     // =========================================================================
     // 3. 支出
