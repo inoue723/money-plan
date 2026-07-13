@@ -203,13 +203,14 @@ export function runSimulation(input: SimulationInput): SimulationResult {
     if (workPeriod && grossSalary > 0) {
       if (workPeriod.workStyle === 'employee') {
         // 会社員: 給与所得控除 + 健康保険・厚生年金・雇用保険。
-        const self = calcSalaryTax({ grossSalary, hasSpouseDeduction, dependents });
+        const self = calcSalaryTax({ grossSalary, age, hasSpouseDeduction, dependents });
         taxBreakdown = addTaxBreakdown(taxBreakdown, self.breakdown);
         salaryNet += self.netSalary;
       } else {
         // 個人事業主: 青色申告特別控除 + 国民健康保険・国民年金(雇用保険なし)。
         const self = calcSelfEmployedTax({
           businessIncome: grossSalary,
+          age,
           hasSpouseDeduction,
           dependents,
         });

@@ -53,6 +53,19 @@ describe('社会保険料', () => {
     expect(s.total).toBeGreaterThan(1_999_000); // 切り捨て誤差の範囲でほぼ上限
     expect(s.health + s.pension + s.employment).toBe(s.total);
   });
+
+  it('40〜64 歳は健康保険料に介護分(0.8%)が上乗せされる', () => {
+    // 額面 400 万・50 歳: 健康保険 (5.0% + 0.8%) × 400 万 = 232,000。厚生年金・雇用保険は不変。
+    const withCare = calcSocialInsurance(4_000_000, 50);
+    expect(withCare.health).toBe(232_000);
+    expect(withCare.pension).toBe(366_000);
+    expect(withCare.employment).toBe(24_000);
+
+    // 40 歳未満・65 歳以上、年齢未指定は介護分なし(健康保険 200,000)。
+    expect(calcSocialInsurance(4_000_000, 39).health).toBe(200_000);
+    expect(calcSocialInsurance(4_000_000, 65).health).toBe(200_000);
+    expect(calcSocialInsurance(4_000_000).health).toBe(200_000);
+  });
 });
 
 describe('所得税(復興特別所得税込み)', () => {
@@ -131,6 +144,14 @@ describe('給与の総合計算(calcSalaryTax)', () => {
     expect(withFamily.breakdown.residentTax).toBeLessThan(single.breakdown.residentTax);
   });
 
+  it('40〜64 歳は介護分の分だけ健康保険料が増え、手取りが減る', () => {
+    const noCare = calcSalaryTax({ grossSalary: 400 });
+    const withCare = calcSalaryTax({ grossSalary: 400, age: 50 });
+    expect(withCare.breakdown.healthInsurance).toBeGreaterThan(noCare.breakdown.healthInsurance);
+    expect(withCare.breakdown.socialInsurance).toBeGreaterThan(noCare.breakdown.socialInsurance);
+    expect(withCare.netSalary).toBeLessThan(noCare.netSalary);
+  });
+
   it('calcNetSalary は calcSalaryTax の手取りと一致する', () => {
     expect(calcNetSalary({ grossSalary: 700 })).toBe(calcSalaryTax({ grossSalary: 700 }).netSalary);
   });
@@ -142,23 +163,40 @@ describe('個人事業主(青色申告)の税・社会保険料', () => {
     expect(calcBusinessIncome(500_000)).toBe(0);
   });
 
-  it('国民健康保険料 = (所得 − 基礎控除 43 万)× 10.4% + 均等割', () => {
-    // 所得 435 万: (4,350,000 − 430,000) × 0.104 + 64,000 = 471,680
-    expect(calcNationalHealthInsurance(4_350_000)).toBe(471_680);
-    // 所得 0(基礎控除以下)は均等割のみ。
-    expect(calcNationalHealthInsurance(0)).toBe(64_000);
+  it('国民健康保険料 = 医療分 + 支援金分 + 子育て支援金分の 所得割 + 均等割(介護分なし)', () => {
+    // 所得 435 万・介護分なし(年齢未指定)。
+    // 基礎控除後 392 万に対し 医療分 349,532 + 支援金分 122,148 + 子育て支援金分 9,040 = 480,720。
+    expect(calcNationalHealthInsurance(4_350_000)).toBe(480_720);
+    // 所得 0(基礎控除以下)は各区分の均等割のみ(47,300 + 16,700 + 1,200 = 65,200)。
+    expect(calcNationalHealthInsurance(0)).toBe(65_200);
   });
 
-  it('国民健康保険料は賦課限度額(92 万円)で頭打ちになる', () => {
-    expect(calcNationalHealthInsurance(50_000_000)).toBe(920_000);
+  it('40〜64 歳は介護分が上乗せされる', () => {
+    // 所得 435 万・50 歳: 介護分(392 万 × 2.42% + 16,600 = 111,464)が加算され 592,184。
+    expect(calcNationalHealthInsurance(4_350_000, 50)).toBe(592_184);
+    // 40 歳未満・65 歳以上は介護分なし。
+    expect(calcNationalHealthInsurance(4_350_000, 39)).toBe(480_720);
+    expect(calcNationalHealthInsurance(4_350_000, 65)).toBe(480_720);
+  });
+
+  it('国民健康保険料は区分ごとの賦課限度額で頭打ちになる', () => {
+    // 介護分なし: 医療分 66万 + 支援金分 26万 + 子育て支援金分 6万 = 98万。
+    expect(calcNationalHealthInsurance(50_000_000)).toBe(980_000);
+    // 介護分(40〜64歳)ありは介護分の限度額 17万が加わり 115万。
+    expect(calcNationalHealthInsurance(50_000_000, 50)).toBe(1_150_000);
   });
 
   it('社会保険料 = 国保 + 国民年金(定額)。雇用保険・厚生年金なし', () => {
     const s = calcSelfEmployedSocialInsurance(4_350_000);
-    expect(s.health).toBe(471_680); // 国民健康保険
+    expect(s.health).toBe(480_720); // 国民健康保険(介護分なし)
     expect(s.pension).toBe(215_040); // 国民年金 17,920 円 × 12
     expect(s.employment).toBe(0);
     expect(s.total).toBe(s.health + s.pension);
+
+    // 40〜64 歳は国保に介護分が加わり保険料が増える。
+    const withCare = calcSelfEmployedSocialInsurance(4_350_000, 50);
+    expect(withCare.health).toBe(592_184);
+    expect(withCare.total).toBeGreaterThan(s.total);
   });
 
   it('calcSelfEmployedTax: 手取り = 事業所得 − 所得税 − 住民税 − 社会保険料', () => {
@@ -185,11 +223,20 @@ describe('個人事業主(青色申告)の税・社会保険料', () => {
 
   it('事業所得 500 万・独身の税額がおおよその想定値に一致する', () => {
     const { breakdown } = calcSelfEmployedTax({ businessIncome: 500 });
-    // 所得 435 万 − 社保 68.672 万 − 基礎控除で、
-    // 所得税 ≈ 22.5 万、住民税 ≈ 32.8 万、社会保険料 ≈ 68.7 万(万円単位)。
-    expect(breakdown.incomeTax).toBeCloseTo(22.5436, 2);
-    expect(breakdown.residentTax).toBeCloseTo(32.83, 2);
-    expect(breakdown.socialInsurance).toBeCloseTo(68.672, 3);
+    // 所得 435 万 − 社保 69.576 万 − 基礎控除で(介護分なし)、
+    // 所得税 ≈ 22.5 万、住民税 ≈ 32.7 万、社会保険料 ≈ 69.6 万(万円単位)。
+    expect(breakdown.incomeTax).toBeCloseTo(22.4517, 2);
+    expect(breakdown.residentTax).toBeCloseTo(32.74, 2);
+    expect(breakdown.socialInsurance).toBeCloseTo(69.576, 3);
+  });
+
+  it('40〜64 歳は介護分の分だけ社会保険料が増え、手取りが減る', () => {
+    const noCare = calcSelfEmployedTax({ businessIncome: 500 });
+    const withCare = calcSelfEmployedTax({ businessIncome: 500, age: 50 });
+    // 介護分により国保(健康保険)が増える。
+    expect(withCare.breakdown.healthInsurance).toBeGreaterThan(noCare.breakdown.healthInsurance);
+    expect(withCare.breakdown.socialInsurance).toBeGreaterThan(noCare.breakdown.socialInsurance);
+    expect(withCare.netIncome).toBeLessThan(noCare.netIncome);
   });
 
   it('配偶者控除・扶養控除で課税が軽くなる', () => {
