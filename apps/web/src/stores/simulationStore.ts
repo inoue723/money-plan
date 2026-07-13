@@ -25,7 +25,8 @@
  *   保存はローカルのみで、外部送信は一切行わない。`selectedYear` は一時 UI 状態のため
  *   永続化しない(partialize で除外)。
  * - スキーマは `version`(下記 PERSIST_VERSION)を持ち、`migrate` で旧データを変換する
- *   (v1: `{ input, plans }` → v2: `{ input, tabs, activeTabId }`)。
+ *   (v1: `{ input, plans }` → v2: `{ input, tabs, activeTabId }`、
+ *    v2 → v3: `basic.investments` を廃止し、投資枠ごとの `initialHolding` へ移行)。
  */
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
@@ -51,7 +52,6 @@ export const DEFAULT_INPUT: SimulationInput = {
     currentAge: 30, // シミュレーション起点(18〜80)
     endAge: 90, // SPEC.md 2.2 デフォルト 90 歳
     savings: 300, // 現在の預金残高(万円)
-    investments: 0, // SPEC.md 2.2 デフォルト 0
   },
   family: {
     spouse: undefined, // 配偶者なし
@@ -105,6 +105,7 @@ export const DEFAULT_INPUT: SimulationInput = {
       {
         name: 'NISA',
         accountType: 'nisa', // NISA 利用(非課税枠内の運用益を非課税)
+        initialHolding: 0, // 現在投資額(初期保有額・万円)。デフォルト 0
         monthlyAmount: 0, // SPEC.md 2.2 デフォルト 0
         annualReturn: 3.0, // SPEC.md 2.2 デフォルト 3.0%
         startAge: 30, // 積立開始年齢。デフォルトは現在年齢(30)
@@ -140,7 +141,7 @@ export interface PlanTab {
  * 永続化スキーマのバージョン。`tabs` や入力形状(`SimulationInput`)の構造を
  * 破壊的に変更したら増やし、`persist` の `migrate` で旧データを変換する。
  */
-export const PERSIST_VERSION = 2;
+export const PERSIST_VERSION = 3;
 
 /** localStorage のキー(SPEC.md 4.1: ローカルのみに保存)。 */
 export const PERSIST_KEY = 'money-plan/simulation';
@@ -150,6 +151,26 @@ const cloneInput = (input: SimulationInput): SimulationInput =>
   typeof structuredClone === 'function'
     ? structuredClone(input)
     : (JSON.parse(JSON.stringify(input)) as SimulationInput);
+
+/**
+ * v2 → v3 の入力マイグレーション。
+ * 旧 `basic.investments`(初期投資資産額の一括入力)を廃止し、先頭の投資枠の
+ * `initialHolding`(現在投資額)へ組み入れる。initialHolding が無い旧枠は 0 で補完する。
+ * 投資枠が 1 つも無い場合は移行先が無いため初期投資資産は破棄する(旧 engine と同挙動)。
+ */
+const migrateInvestmentsToHolding = (input: SimulationInput): SimulationInput => {
+  const old = input as SimulationInput & { basic: BasicInput & { investments?: number } };
+  const investments = typeof old.basic.investments === 'number' ? old.basic.investments : 0;
+  // basic から廃止した investments キーを取り除く(他フィールドは保持)。
+  const basic: BasicInput & { investments?: number } = { ...old.basic };
+  delete basic.investments;
+  const accounts = old.investment.accounts.map((a, i) => ({
+    ...a,
+    initialHolding:
+      (typeof a.initialHolding === 'number' ? a.initialHolding : 0) + (i === 0 ? investments : 0),
+  }));
+  return { ...old, basic, investment: { ...old.investment, accounts } };
+};
 
 /** タブの一意 ID を採番する。 */
 const createPlanId = (): string =>
@@ -359,6 +380,8 @@ export const useSimulationStore = create<SimulationState>()(
       }),
       // 破壊的なスキーマ変更時はここで旧バージョンのデータを変換する。
       migrate: (persisted, version) => {
+        let data: { input: SimulationInput; tabs: PlanTab[]; activeTabId: string };
+
         if (version < 2) {
           // v1: { input, plans: SavedPlan[] } → v2: タブモデルへ変換。
           const old = persisted as {
@@ -382,13 +405,26 @@ export const useSimulationStore = create<SimulationState>()(
               draftInput: cloneInput(p.input),
             });
           }
-          return { input: old.input, tabs, activeTabId: active.id };
+          data = { input: old.input, tabs, activeTabId: active.id };
+        } else {
+          data = persisted as { input: SimulationInput; tabs: PlanTab[]; activeTabId: string };
         }
-        return persisted as {
-          input: SimulationInput;
-          tabs: PlanTab[];
-          activeTabId: string;
-        };
+
+        if (version < 3) {
+          // v2 → v3: basic.investments を廃止し、投資枠ごとの initialHolding へ移行。
+          // 既存の初期投資資産は先頭の投資枠の現在投資額に組み入れる(engine の従来挙動と同位置)。
+          data = {
+            input: migrateInvestmentsToHolding(data.input),
+            tabs: data.tabs.map((t) => ({
+              ...t,
+              savedInput: migrateInvestmentsToHolding(t.savedInput),
+              draftInput: migrateInvestmentsToHolding(t.draftInput),
+            })),
+            activeTabId: data.activeTabId,
+          };
+        }
+
+        return data;
       },
     },
   ),

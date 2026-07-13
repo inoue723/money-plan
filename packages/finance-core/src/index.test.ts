@@ -15,7 +15,7 @@ describe('finance-core 疎通', () => {
 
   it('型が利用できる(型付き値を組み立てられる)', () => {
     const input: SimulationInput = {
-      basic: { currentAge: 30, endAge: 90, savings: 500, investments: 0 },
+      basic: { currentAge: 30, endAge: 90, savings: 500 },
       family: { children: [] },
       income: {
         workPeriods: [
@@ -40,6 +40,7 @@ describe('finance-core 疎通', () => {
           {
             name: 'NISA',
             accountType: 'nisa',
+            initialHolding: 0,
             monthlyAmount: 3,
             annualReturn: 3.0,
             startAge: 30,

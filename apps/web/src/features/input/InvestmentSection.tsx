@@ -7,6 +7,7 @@
  * 上限超過分は積み立てられず預金に残る(計算は finance-core 側)。
  */
 import type { AccountType, InvestmentAccount } from '@money-plan/finance-core';
+import { NISA_LIFETIME_LIMIT, nisaInitialLifetimeUsage } from '@money-plan/finance-core';
 import { useSimulationStore } from '../../stores/simulationStore';
 import { NumberField } from '../../components/NumberField';
 import { AgeNumberField } from '../../components/AgeNumberField';
@@ -22,6 +23,7 @@ const ACCOUNT_TYPE_OPTIONS: { value: AccountType; label: string }[] = [
 const createDefaultAccount = (currentAge: number): InvestmentAccount => ({
   name: '特定口座',
   accountType: 'taxable',
+  initialHolding: 0,
   monthlyAmount: 0,
   annualReturn: 3.0,
   startAge: currentAge,
@@ -46,10 +48,22 @@ export function InvestmentSection() {
     setInvestment({ accounts: [...accounts, createDefaultAccount(currentAge)] });
   };
 
+  // NISA 枠の初期保有額(現在投資額)の合計。生涯投資枠(1800 万)を消費する扱いのため、
+  // 合計が上限を超える入力は警告する。
+  const nisaInitialTotal = nisaInitialLifetimeUsage(accounts);
+  const nisaInitialOverLimit = nisaInitialTotal > NISA_LIFETIME_LIMIT;
+
   return (
     <div className="flex flex-col gap-3">
       {accounts.length === 0 && (
         <p className="text-[11px] text-slate-400">投資枠はまだありません。</p>
+      )}
+
+      {nisaInitialOverLimit && (
+        <p className="rounded-md border border-rose-200 bg-rose-50 px-2 py-1 text-[11px] text-rose-600">
+          NISA 枠の現在投資額の合計が {nisaInitialTotal} 万円で、生涯投資枠の上限（
+          {NISA_LIFETIME_LIMIT} 万円）を超えています。超過分は生涯枠を消費できません。
+        </p>
       )}
 
       {accounts.map((account, i) => (
@@ -115,6 +129,15 @@ function AccountFields({
           options={ACCOUNT_TYPE_OPTIONS}
           onChange={(v) => onChange({ ...account, accountType: v as AccountType })}
           hint={account.accountType === 'nisa' ? '生涯1800万・年間360万まで' : undefined}
+        />
+        <NumberField
+          label="現在投資額"
+          value={account.initialHolding}
+          onChange={(v) => onChange({ ...account, initialHolding: v })}
+          min={0}
+          step={0.1}
+          unit="万円"
+          hint={account.accountType === 'nisa' ? '初期保有分も生涯枠を消費' : '起点で保有中の額'}
         />
         <NumberField
           label="毎月の積立額"
