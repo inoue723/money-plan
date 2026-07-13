@@ -13,12 +13,18 @@
  * - `selectedYear`(年次詳細で選択中の年)も保持する。#10(グラフ)がクリックで設定し、
  *   #11(年次内訳)が購読する共有 state。
  *
- * ## 永続化 / プラン保存(issue #12, F-09, SPEC.md 4.1)
- * - `persist` middleware で現在入力(`input`)と保存済みプラン一覧(`plans`)を
- *   localStorage に保存する。保存はローカルのみで、外部送信は一切行わない。
- * - スキーマは `version`(下記 PERSIST_VERSION)を持ち、将来の入力形状変更に対して
- *   `migrate` でマイグレーションできるようにしておく。
- * - `selectedYear` は UI の一時状態のため永続化しない(partialize で除外)。
+ * ## プランタブ / 永続化(issue #12, F-09, SPEC.md 4.1)
+ * - プランは「タブ」として複数保持する(`tabs`)。各タブは保存済みスナップショット
+ *   (`savedInput`)と編集中ドラフト(`draftInput`)を持つ。アクティブタブのドラフトは
+ *   `input` と常に同期し、既存の setter / 即時再計算パイプラインをそのまま使える。
+ * - `draftInput` が `savedInput` と値として異なれば「未保存」(`isTabDirty`)。UI は
+ *   タブ名の横に ◯ を表示する。`saveActiveTab`(保存ボタン / Cmd|Ctrl+S)で
+ *   アクティブタブの `savedInput` を現在入力で上書きする。
+ * - `persist` middleware で `tabs` / `activeTabId` / `input` を localStorage に保存する。
+ *   保存はローカルのみで、外部送信は一切行わない。`selectedYear` は一時 UI 状態のため
+ *   永続化しない(partialize で除外)。
+ * - スキーマは `version`(下記 PERSIST_VERSION)を持ち、`migrate` で旧データを変換する
+ *   (v1: `{ input, plans }` → v2: `{ input, tabs, activeTabId }`)。
  */
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
@@ -113,48 +119,75 @@ export const DEFAULT_INPUT: SimulationInput = {
 // ---------------------------------------------------------------------------
 
 /**
- * 名前付き保存プラン(F-09)。`input` はその時点の入力一式のスナップショット。
- * `savedAt` は保存時刻(epoch ミリ秒)で、一覧の並び順・表示に使う。
+ * プランタブ(F-09)。1 タブ = 1 プラン。
+ * - `savedInput`: 最後に保存(上書き)された入力のスナップショット。
+ * - `draftInput`: 編集中の入力。`savedInput` と値が異なれば「未保存」。
+ *   アクティブタブの `draftInput` はストアの `input` と常に同じ値に保たれる。
  */
-export interface SavedPlan {
-  /** 一意 ID(保存時に採番)。読込・削除の対象指定に使う。 */
+export interface PlanTab {
+  /** 一意 ID(タブ生成時に採番)。 */
   id: string;
-  /** ユーザーが付けたプラン名。 */
+  /** タブ名(プラン名)。 */
   name: string;
-  /** 保存時点の入力一式のスナップショット(独立コピー)。 */
-  input: SimulationInput;
-  /** 保存時刻(epoch ミリ秒)。 */
-  savedAt: number;
+  /** 最後に保存された入力のスナップショット(独立コピー)。 */
+  savedInput: SimulationInput;
+  /** 編集中の入力(独立コピー)。 */
+  draftInput: SimulationInput;
 }
 
 /**
- * 永続化スキーマのバージョン。入力形状(`SimulationInput`)や `plans` の構造を
+ * 永続化スキーマのバージョン。`tabs` や入力形状(`SimulationInput`)の構造を
  * 破壊的に変更したら増やし、`persist` の `migrate` で旧データを変換する。
  */
-export const PERSIST_VERSION = 1;
+export const PERSIST_VERSION = 2;
 
 /** localStorage のキー(SPEC.md 4.1: ローカルのみに保存)。 */
 export const PERSIST_KEY = 'money-plan/simulation';
 
-/** 入力一式の独立コピーを作る(保存プランと現在入力が参照を共有しないように)。 */
+/** 入力一式の独立コピーを作る(タブ間・保存/ドラフト間で参照を共有しないように)。 */
 const cloneInput = (input: SimulationInput): SimulationInput =>
   typeof structuredClone === 'function'
     ? structuredClone(input)
     : (JSON.parse(JSON.stringify(input)) as SimulationInput);
 
-/** 保存プランの一意 ID を採番する。 */
+/** タブの一意 ID を採番する。 */
 const createPlanId = (): string =>
   typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
     ? crypto.randomUUID()
     : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
+/** タブが未保存(ドラフトが保存内容と値として異なる)かどうか。 */
+export const isTabDirty = (tab: PlanTab): boolean =>
+  JSON.stringify(tab.draftInput) !== JSON.stringify(tab.savedInput);
+
+/** 新規タブを作る。保存/ドラフトともに `input` の独立コピー(= 生成直後は未保存でない)。 */
+const makeTab = (name: string, input: SimulationInput = DEFAULT_INPUT): PlanTab => ({
+  id: createPlanId(),
+  name,
+  savedInput: cloneInput(input),
+  draftInput: cloneInput(input),
+});
+
+/** 既存タブ名と重複しない「プラン N」を返す。 */
+const nextTabName = (tabs: PlanTab[]): string => {
+  const names = new Set(tabs.map((t) => t.name));
+  let n = tabs.length + 1;
+  while (names.has(`プラン ${n}`)) n += 1;
+  return `プラン ${n}`;
+};
+
+/** 初期タブ(永続化データが無い初回起動時に使う)。 */
+const INITIAL_TAB = makeTab('プラン 1');
+
 export interface SimulationState {
-  /** 入力一式(唯一の真実。結果はここから派生する)。 */
+  /** 入力一式(唯一の真実。結果はここから派生する)。アクティブタブのドラフトと同期する。 */
   input: SimulationInput;
   /** 年次詳細で選択中の年(西暦)。未選択は null。#10 が設定し #11 が購読する。 */
   selectedYear: number | null;
-  /** 保存済みプラン一覧(F-09)。localStorage に永続化される。 */
-  plans: SavedPlan[];
+  /** プランタブ一覧(F-09)。localStorage に永続化される。 */
+  tabs: PlanTab[];
+  /** アクティブなタブの ID。 */
+  activeTabId: string;
 
   /** F-01 基本情報の部分更新。 */
   setBasic: (patch: Partial<BasicInput>) => void;
@@ -168,80 +201,145 @@ export interface SimulationState {
   setInvestment: (patch: Partial<InvestmentInput>) => void;
   /** F-04 ライフイベント一覧の置き換え。 */
   setEvents: (events: LifeEvent[]) => void;
-  /** 入力一式をデフォルトへ戻す。 */
+  /** 入力一式をデフォルトへ戻す(アクティブタブのドラフトを更新)。 */
   resetInput: () => void;
 
   /** 選択年を設定する(#10 のグラフクリック等から)。 */
   setSelectedYear: (year: number | null) => void;
 
-  /** 現在の入力を名前付きプランとして保存する(F-09)。ID を返す。 */
-  savePlan: (name: string) => string;
-  /** 保存済みプランを読込み、入力一式を置換する(即時再計算に反映)。 */
-  loadPlan: (id: string) => void;
-  /** 保存済みプランを削除する。 */
-  deletePlan: (id: string) => void;
+  /** 新しいプランタブを追加してアクティブにする。 */
+  addTab: () => void;
+  /** タブを切り替える(そのタブのドラフトを入力に読込む)。 */
+  selectTab: (id: string) => void;
+  /** タブを閉じる(プラン削除)。最後の 1 枚を閉じたら新しい既定タブを作る。 */
+  closeTab: (id: string) => void;
+  /** タブ名を変更する。 */
+  renameTab: (id: string, name: string) => void;
+  /** アクティブタブを現在入力で上書き保存する(保存ボタン / Cmd|Ctrl+S)。 */
+  saveActiveTab: () => void;
 }
+
+/**
+ * アクティブタブのドラフトと `input` を同時に更新するヘルパ。
+ * 既存の各 setter はこれを通すことで、`input`(= アクティブタブのドラフト)の
+ * 参照を必ず更新し、派生セレクタのメモ化を無効化しつつ未保存判定も正しく保つ。
+ */
+const withDraft = (
+  state: SimulationState,
+  next: SimulationInput,
+): Pick<SimulationState, 'input' | 'tabs'> => ({
+  input: next,
+  tabs: state.tabs.map((t) => (t.id === state.activeTabId ? { ...t, draftInput: next } : t)),
+});
 
 export const useSimulationStore = create<SimulationState>()(
   persist(
-    (set, get) => ({
-      input: DEFAULT_INPUT,
+    (set) => ({
+      input: INITIAL_TAB.draftInput,
       selectedYear: null,
-      plans: [],
+      tabs: [INITIAL_TAB],
+      activeTabId: INITIAL_TAB.id,
 
       setBasic: (patch) =>
-        set((state) => ({ input: { ...state.input, basic: { ...state.input.basic, ...patch } } })),
+        set((s) => withDraft(s, { ...s.input, basic: { ...s.input.basic, ...patch } })),
       setFamily: (patch) =>
-        set((state) => ({
-          input: { ...state.input, family: { ...state.input.family, ...patch } },
-        })),
+        set((s) => withDraft(s, { ...s.input, family: { ...s.input.family, ...patch } })),
       setIncome: (patch) =>
-        set((state) => ({
-          input: { ...state.input, income: { ...state.input.income, ...patch } },
-        })),
+        set((s) => withDraft(s, { ...s.input, income: { ...s.input.income, ...patch } })),
       setExpense: (patch) =>
-        set((state) => ({
-          input: { ...state.input, expense: { ...state.input.expense, ...patch } },
-        })),
+        set((s) => withDraft(s, { ...s.input, expense: { ...s.input.expense, ...patch } })),
       setInvestment: (patch) =>
-        set((state) => ({
-          input: { ...state.input, investment: { ...state.input.investment, ...patch } },
-        })),
-      setEvents: (events) => set((state) => ({ input: { ...state.input, events } })),
-      resetInput: () => set({ input: DEFAULT_INPUT, selectedYear: null }),
+        set((s) => withDraft(s, { ...s.input, investment: { ...s.input.investment, ...patch } })),
+      setEvents: (events) => set((s) => withDraft(s, { ...s.input, events })),
+      resetInput: () =>
+        set((s) => ({ ...withDraft(s, cloneInput(DEFAULT_INPUT)), selectedYear: null })),
 
       setSelectedYear: (year) => set({ selectedYear: year }),
 
-      savePlan: (name) => {
-        const id = createPlanId();
-        const plan: SavedPlan = {
-          id,
-          name,
-          input: cloneInput(get().input),
-          savedAt: Date.now(),
-        };
-        set((state) => ({ plans: [...state.plans, plan] }));
-        return id;
-      },
-      loadPlan: (id) => {
-        const plan = get().plans.find((p) => p.id === id);
-        if (!plan) return;
-        // 保存プランを破壊しないよう独立コピーで置換する。参照が変わるため即時再計算される。
-        set({ input: cloneInput(plan.input), selectedYear: null });
-      },
-      deletePlan: (id) => set((state) => ({ plans: state.plans.filter((p) => p.id !== id) })),
+      addTab: () =>
+        set((s) => {
+          const tab = makeTab(nextTabName(s.tabs));
+          return {
+            tabs: [...s.tabs, tab],
+            activeTabId: tab.id,
+            input: tab.draftInput,
+            selectedYear: null,
+          };
+        }),
+      selectTab: (id) =>
+        set((s) => {
+          const tab = s.tabs.find((t) => t.id === id);
+          if (!tab || id === s.activeTabId) return {};
+          // 各タブのドラフトは常に最新に保たれているので、そのまま入力へ読込む。
+          return { activeTabId: id, input: tab.draftInput, selectedYear: null };
+        }),
+      closeTab: (id) =>
+        set((s) => {
+          const idx = s.tabs.findIndex((t) => t.id === id);
+          if (idx === -1) return {};
+          const remaining = s.tabs.filter((t) => t.id !== id);
+          if (remaining.length === 0) {
+            // 最後の 1 枚を閉じたら空にはせず、新しい既定タブを開く。
+            const tab = makeTab('プラン 1');
+            return { tabs: [tab], activeTabId: tab.id, input: tab.draftInput, selectedYear: null };
+          }
+          if (id !== s.activeTabId) return { tabs: remaining };
+          // アクティブタブを閉じた場合は隣(右優先、無ければ左)をアクティブにする。
+          // ここでは remaining.length >= 1 が保証される。
+          const nextActive = remaining[Math.min(idx, remaining.length - 1)]!;
+          return {
+            tabs: remaining,
+            activeTabId: nextActive.id,
+            input: nextActive.draftInput,
+            selectedYear: null,
+          };
+        }),
+      renameTab: (id, name) =>
+        set((s) => ({ tabs: s.tabs.map((t) => (t.id === id ? { ...t, name } : t)) })),
+      saveActiveTab: () =>
+        set((s) => ({
+          tabs: s.tabs.map((t) =>
+            t.id === s.activeTabId ? { ...t, savedInput: cloneInput(s.input) } : t,
+          ),
+        })),
     }),
     {
       name: PERSIST_KEY,
       version: PERSIST_VERSION,
       // selectedYear は一時的な UI 状態なので永続化しない。
-      partialize: (state) => ({ input: state.input, plans: state.plans }),
+      partialize: (state) => ({
+        input: state.input,
+        tabs: state.tabs,
+        activeTabId: state.activeTabId,
+      }),
       // 破壊的なスキーマ変更時はここで旧バージョンのデータを変換する。
       migrate: (persisted, version) => {
-        if (version < PERSIST_VERSION) {
-          // v1 が初版のため現状は変換不要。将来のバージョンで分岐を追加する。
+        if (version < 2) {
+          // v1: { input, plans: SavedPlan[] } → v2: タブモデルへ変換。
+          const old = persisted as {
+            input: SimulationInput;
+            plans?: Array<{ id: string; name: string; input: SimulationInput }>;
+          };
+          const planTabs: PlanTab[] = (old.plans ?? []).map((p) => ({
+            id: p.id,
+            name: p.name,
+            savedInput: p.input,
+            draftInput: cloneInput(p.input),
+          }));
+          // 旧「現在入力」を先頭のアクティブタブとして残す。
+          const active: PlanTab = {
+            id: createPlanId(),
+            name: 'プラン 1',
+            savedInput: cloneInput(old.input),
+            draftInput: old.input,
+          };
+          return { input: old.input, tabs: [active, ...planTabs], activeTabId: active.id };
         }
-        return persisted as { input: SimulationInput; plans: SavedPlan[] };
+        return persisted as {
+          input: SimulationInput;
+          tabs: PlanTab[];
+          activeTabId: string;
+        };
       },
     },
   ),
