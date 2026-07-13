@@ -58,11 +58,30 @@ export const DEFAULT_INPUT: SimulationInput = {
     other: 0,
   },
   expense: {
-    rent: 8, // 家賃(月額・万円)
-    living: 15, // 生活費(月額・万円)
-    insurance: 1, // 保険料(月額・万円)
-    fixed: 2, // その他固定費(月額・万円)
-    inflationRate: 1.0, // SPEC.md 2.2 デフォルト 1.0%
+    // 支出項目(#31)。現行デフォルト値を「現在年齢(30)〜終了年齢(90)」の1期間で表す。
+    // 物価上昇は現行挙動に合わせ、家賃・生活費のみ 1.0%(保険料・その他固定費は 0%)。
+    items: [
+      {
+        name: '家賃',
+        inflationRate: 1.0,
+        periods: [{ startAge: 30, endAge: 90, monthlyAmount: 8 }],
+      },
+      {
+        name: '生活費',
+        inflationRate: 1.0,
+        periods: [{ startAge: 30, endAge: 90, monthlyAmount: 15 }],
+      },
+      {
+        name: '保険料',
+        inflationRate: 0,
+        periods: [{ startAge: 30, endAge: 90, monthlyAmount: 1 }],
+      },
+      {
+        name: 'その他固定費',
+        inflationRate: 0,
+        periods: [{ startAge: 30, endAge: 90, monthlyAmount: 2 }],
+      },
+    ],
   },
   events: [],
   investment: {

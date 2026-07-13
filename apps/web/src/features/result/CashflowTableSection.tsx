@@ -10,7 +10,7 @@
  */
 import type { ReactNode } from 'react';
 import { useSimulationResult, useSimulationStore } from '../../stores/simulationStore';
-import { CASHFLOW_SECTIONS, formatMan } from './yearColumns';
+import { buildCashflowSections, formatMan } from './yearColumns';
 
 export function CashflowTableSection() {
   const result = useSimulationResult();
@@ -20,6 +20,8 @@ export function CashflowTableSection() {
   const hasData = result.length > 0;
   // 先頭の項目名列 + 各年の列。セクション見出し行を全幅に伸ばす際の colSpan に使う。
   const totalCols = result.length + 1;
+  // 支出項目(#31)を含むため、行構成は結果から動的に組み立てる。
+  const sections = buildCashflowSections(result);
 
   return (
     <section className="rounded-lg border border-slate-200 bg-white p-4">
@@ -96,14 +98,14 @@ export function CashflowTableSection() {
               </tr>
             </thead>
             <tbody>
-              {CASHFLOW_SECTIONS.map((section) => (
+              {sections.map((section) => (
                 <FragmentSection
                   key={section.heading}
                   heading={section.heading}
                   totalCols={totalCols}
                 >
-                  {section.rows.map((row) => (
-                    <tr key={row.label} className="border-b border-slate-100">
+                  {section.rows.map((row, rowIdx) => (
+                    <tr key={`${row.label}-${rowIdx}`} className="border-b border-slate-100">
                       <th
                         scope="row"
                         className={`sticky left-0 z-10 min-w-[8rem] border-r border-slate-200 bg-white px-3 py-1.5 text-left font-normal ${

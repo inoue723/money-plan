@@ -173,18 +173,35 @@ export interface IncomeInput {
   other: number;
 }
 
-/** F-03 支出情報。 */
-export interface ExpenseInput {
-  /** 家賃(月額・万円)。持ち家の場合は 0。 */
-  rent: number;
-  /** 生活費(月額・万円)。 */
-  living: number;
-  /** 保険料(月額・万円)。 */
-  insurance: number;
-  /** その他固定費(月額・万円)。 */
-  fixed: number;
-  /** 物価上昇率(年率 %)。デフォルト 1.0。生活費・家賃に適用。 */
+/** F-03 支出項目の年齢期間。本人年齢がこの範囲(両端を含む)にある年に月額を計上する。 */
+export interface ExpensePeriod {
+  /** 開始年齢(本人年齢・歳)。 */
+  startAge: number;
+  /** 終了年齢(この年齢まで計上=両端を含む)。 */
+  endAge: number;
+  /** 月額(万円)。 */
+  monthlyAmount: number;
+}
+
+/**
+ * F-03 支出項目(#31)。
+ *
+ * 項目名・物価上昇率(項目ごと)・年齢期間ごとの月額を持つ自由項目。
+ * 物価上昇はシミュレーション起点からの経過年数で項目ごとに複利適用する。
+ */
+export interface ExpenseItem {
+  /** 項目名(例: 家賃、生活費)。 */
+  name: string;
+  /** 物価上昇率(年率 %)。この項目にのみ適用。 */
   inflationRate: number;
+  /** 年齢期間ごとの月額(期間の重複は不可。どの期間にも該当しない年齢は計上なし)。 */
+  periods: ExpensePeriod[];
+}
+
+/** F-03 支出情報(#31)。自由に追加できる支出項目のリストとして保持する。 */
+export interface ExpenseInput {
+  /** 支出項目の一覧。 */
+  items: ExpenseItem[];
 }
 
 /** 投資の取り崩し設定。 */
@@ -282,18 +299,27 @@ export interface TaxBreakdown {
   socialInsurance: number;
 }
 
-/** 支出内訳(SPEC.md 2.3.4、金額はすべて万円)。 */
+/** 支出項目1つの当年計上額(年額・万円)。 */
+export interface ExpenseItemAmount {
+  /** 項目名(入力の ExpenseItem.name に対応)。 */
+  name: string;
+  /** 当年の年額(月額 × 12 × 物価上昇係数)。該当期間が無い年は 0。 */
+  amount: number;
+}
+
+/**
+ * 支出内訳(SPEC.md 2.3.4、金額はすべて万円)。
+ *
+ * #31 で支出を自由項目リストに再設計したため、内訳は「項目ごとの年額(items)」に加え、
+ * 別枠で扱う教育費(education)・住宅ローン返済(loan)・ライフイベント一時支出(events)を持つ。
+ */
 export interface ExpenseBreakdown {
-  /** 住居費(家賃または住宅ローン返済額)。 */
-  housing: number;
-  /** 生活費。 */
-  living: number;
-  /** 教育費。 */
+  /** 支出項目ごとの年額(入力の items と同順・同数)。 */
+  items: ExpenseItemAmount[];
+  /** 教育費(子どもの進路プランから算出)。 */
   education: number;
-  /** 保険料。 */
-  insurance: number;
-  /** その他固定費。 */
-  fixed: number;
+  /** 住宅ローン返済額(住宅購入イベント。返済期間内のみ)。 */
+  loan: number;
   /** ライフイベントによる一時支出。 */
   events: number;
 }

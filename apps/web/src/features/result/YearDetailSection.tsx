@@ -30,8 +30,8 @@ function CategoryTable({ caption, rows }: { caption: string; rows: DetailRow[] }
         </tr>
       </thead>
       <tbody>
-        {rows.map((row) => (
-          <tr key={row.label} className="border-b border-slate-100 last:border-b-0">
+        {rows.map((row, i) => (
+          <tr key={`${row.label}-${i}`} className="border-b border-slate-100 last:border-b-0">
             <th
               scope="row"
               className={`py-1 text-left font-normal ${
@@ -109,11 +109,10 @@ function DetailBody({ current, previous }: { current: YearlyResult; previous?: Y
       <CategoryTable
         caption="支出"
         rows={[
-          { label: '住居費', value: expense.housing },
-          { label: '生活費', value: expense.living },
+          // 支出項目(#31)は入力由来で動的。教育費・住宅ローン・イベントは別枠。
+          ...expense.items.map((it) => ({ label: it.name, value: it.amount })),
           { label: '教育費', value: expense.education },
-          { label: '保険料', value: expense.insurance },
-          { label: 'その他固定費', value: expense.fixed },
+          ...(expense.loan > 0 ? [{ label: '住宅ローン', value: expense.loan }] : []),
           { label: 'イベント費用', value: expense.events },
           { label: '支出合計', value: totalExpense(current), emphasize: true },
         ]}

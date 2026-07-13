@@ -25,10 +25,11 @@ export function formatMan(value: number): string {
   return truncMan(value).toLocaleString('ja-JP');
 }
 
-/** 支出内訳の合計(万円)。 */
+/** 支出内訳の合計(万円)。支出項目 + 教育費 + 住宅ローン + イベント費用。 */
 export function totalExpense(r: YearlyResult): number {
   const e = r.expense;
-  return e.housing + e.living + e.education + e.insurance + e.fixed + e.events;
+  const items = e.items.reduce((sum, it) => sum + it.amount, 0);
+  return items + e.education + e.loan + e.events;
 }
 
 /** CF表の 1 行(内訳項目)の定義。横に年次が並び、各年の値を `get` で取り出す。 */
@@ -50,53 +51,67 @@ export interface CashflowSection {
   rows: CashflowRow[];
 }
 
+/** 支出セクションの内訳行を組み立てる(#31)。支出項目は結果から動的に展開する。 */
+function buildExpenseRows(result: YearlyResult[]): CashflowRow[] {
+  // 支出項目は入力由来で全年共通(同順・同数)なので、先頭年の項目名から行を作る。
+  const itemNames = result[0]?.expense.items.map((it) => it.name) ?? [];
+  const rows: CashflowRow[] = itemNames.map((name, k) => ({
+    label: name,
+    get: (r) => r.expense.items[k]?.amount ?? 0,
+  }));
+
+  rows.push({ label: '教育費', get: (r) => r.expense.education });
+  // 住宅ローンは住宅購入イベントがある場合のみ表示する(常時 0 の行を出さない)。
+  if (result.some((r) => r.expense.loan > 0)) {
+    rows.push({ label: '住宅ローン', get: (r) => r.expense.loan });
+  }
+  rows.push({ label: 'イベント費用', get: (r) => r.expense.events });
+  rows.push({ label: '支出合計', get: (r) => totalExpense(r), emphasize: true });
+  return rows;
+}
+
 /**
  * CF表の行構成(SPEC.md 2.3.4 の全内訳を縦に展開)。
+ * 支出項目(#31)は自由項目のため結果から動的に展開する。それ以外は固定行。
  * `YearlyResult` の既存フィールドをそのまま参照する(結果の再計算はしない)。
  */
-export const CASHFLOW_SECTIONS: CashflowSection[] = [
-  {
-    heading: '収入',
-    rows: [
-      { label: '額面給与', get: (r) => r.income.grossSalary },
-      { label: '配偶者給与', get: (r) => r.income.spouseSalary },
-      { label: '年金', get: (r) => r.income.pension },
-      { label: '児童手当', get: (r) => r.income.childAllowance },
-      { label: 'その他収入', get: (r) => r.income.other },
-      { label: '運用益', get: (r) => r.income.investmentGain },
-      { label: '手取り収入', get: (r) => r.income.net, emphasize: true },
-    ],
-  },
-  {
-    heading: '控除(税・社会保険)',
-    rows: [
-      { label: '所得税', get: (r) => r.tax.incomeTax },
-      { label: '住民税', get: (r) => r.tax.residentTax },
-      { label: '健康保険', get: (r) => r.tax.healthInsurance },
-      { label: '厚生年金', get: (r) => r.tax.pensionInsurance },
-      { label: '雇用保険', get: (r) => r.tax.employmentInsurance },
-    ],
-  },
-  {
-    heading: '支出',
-    rows: [
-      { label: '住居費', get: (r) => r.expense.housing },
-      { label: '生活費', get: (r) => r.expense.living },
-      { label: '教育費', get: (r) => r.expense.education },
-      { label: '保険料', get: (r) => r.expense.insurance },
-      { label: 'その他固定費', get: (r) => r.expense.fixed },
-      { label: 'イベント費用', get: (r) => r.expense.events },
-      { label: '支出合計', get: (r) => totalExpense(r), emphasize: true },
-    ],
-  },
-  {
-    heading: '収支・資産',
-    rows: [
-      { label: '年間収支', get: (r) => r.balance },
-      { label: '預金残高', get: (r) => r.savings },
-      { label: '投資資産', get: (r) => r.investmentValue },
-      { label: '総資産', get: (r) => r.totalAssets, emphasize: true },
-      { label: 'イベント', get: (r) => r.events.join(' / '), text: true },
-    ],
-  },
-];
+export function buildCashflowSections(result: YearlyResult[]): CashflowSection[] {
+  return [
+    {
+      heading: '収入',
+      rows: [
+        { label: '額面給与', get: (r) => r.income.grossSalary },
+        { label: '配偶者給与', get: (r) => r.income.spouseSalary },
+        { label: '年金', get: (r) => r.income.pension },
+        { label: '児童手当', get: (r) => r.income.childAllowance },
+        { label: 'その他収入', get: (r) => r.income.other },
+        { label: '運用益', get: (r) => r.income.investmentGain },
+        { label: '手取り収入', get: (r) => r.income.net, emphasize: true },
+      ],
+    },
+    {
+      heading: '控除(税・社会保険)',
+      rows: [
+        { label: '所得税', get: (r) => r.tax.incomeTax },
+        { label: '住民税', get: (r) => r.tax.residentTax },
+        { label: '健康保険', get: (r) => r.tax.healthInsurance },
+        { label: '厚生年金', get: (r) => r.tax.pensionInsurance },
+        { label: '雇用保険', get: (r) => r.tax.employmentInsurance },
+      ],
+    },
+    {
+      heading: '支出',
+      rows: buildExpenseRows(result),
+    },
+    {
+      heading: '収支・資産',
+      rows: [
+        { label: '年間収支', get: (r) => r.balance },
+        { label: '預金残高', get: (r) => r.savings },
+        { label: '投資資産', get: (r) => r.investmentValue },
+        { label: '総資産', get: (r) => r.totalAssets, emphasize: true },
+        { label: 'イベント', get: (r) => r.events.join(' / '), text: true },
+      ],
+    },
+  ];
+}

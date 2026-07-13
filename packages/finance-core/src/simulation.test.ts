@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { runSimulation } from './simulation';
-import type { EducationPlan, LifeEvent, SimulationInput, WorkPeriod } from './types';
+import type { EducationPlan, ExpenseItem, LifeEvent, SimulationInput, WorkPeriod } from './types';
 
 const publicPlan: EducationPlan = {
   preschool: 'public',
@@ -21,6 +21,19 @@ const workPeriod = (overrides: Partial<WorkPeriod> = {}): WorkPeriod => ({
   ...overrides,
 });
 
+/** 支出項目を1つ生成する(既定は全期間 30〜90 歳の1期間)。 */
+const expenseItem = (
+  name: string,
+  monthlyAmount: number,
+  inflationRate = 0,
+  startAge = 30,
+  endAge = 90,
+): ExpenseItem => ({
+  name,
+  inflationRate,
+  periods: [{ startAge, endAge, monthlyAmount }],
+});
+
 /** 最小構成の入力を生成し、必要な部分だけ上書きする。 */
 const baseInput = (overrides: Partial<SimulationInput> = {}): SimulationInput => ({
   basic: { currentAge: 30, endAge: 90, savings: 500, investments: 0 },
@@ -31,7 +44,14 @@ const baseInput = (overrides: Partial<SimulationInput> = {}): SimulationInput =>
     pension: 0,
     other: 0,
   },
-  expense: { rent: 8, living: 15, insurance: 1, fixed: 2, inflationRate: 1.0 },
+  expense: {
+    items: [
+      expenseItem('家賃', 8, 1.0),
+      expenseItem('生活費', 15, 1.0),
+      expenseItem('保険料', 1),
+      expenseItem('その他固定費', 2),
+    ],
+  },
   events: [],
   investment: {
     accounts: [
@@ -93,13 +113,20 @@ describe('runSimulation', () => {
           pension: 0,
           other: 0,
         },
-        expense: { rent: 20, living: 30, insurance: 2, fixed: 3, inflationRate: 1.0 },
+        expense: {
+          items: [
+            expenseItem('家賃', 20, 1.0),
+            expenseItem('生活費', 30, 1.0),
+            expenseItem('保険料', 2),
+            expenseItem('その他固定費', 3),
+          ],
+        },
       }),
     );
     expect(result.some((y) => y.totalAssets < 0)).toBe(true);
   });
 
-  it('住宅購入で家賃が0になり、頭金が一時支出に計上される', () => {
+  it('住宅購入でローン返済(loan)が計上され、頭金が一時支出に計上される(家賃項目は別管理)', () => {
     const events: LifeEvent[] = [
       {
         type: 'homePurchase',
@@ -115,16 +142,79 @@ describe('runSimulation', () => {
     const buyYear = result.find((y) => y.age === 35)!;
     const after = result.find((y) => y.age === 36)!;
 
-    // 購入前は賃貸(家賃 > 0)。購入年に頭金が一時支出に載る。
-    expect(before.expense.housing).toBeGreaterThan(0);
+    // 購入前はローン返済なし。購入年に頭金が一時支出に載る。
+    expect(before.expense.loan).toBe(0);
     expect(buyYear.expense.events).toBeGreaterThanOrEqual(800);
     expect(buyYear.events).toContain('住宅購入');
 
-    // 購入後は家賃ではなくローン返済(頭金は一時支出のみ、以降 housing はローン)。
-    expect(after.expense.housing).toBeGreaterThan(0);
-    // ローン完済後(age 65: 35+30)は住居費 0。
+    // 購入後はローン返済(loan)が計上される(#31: 家賃相当は支出項目側で別管理する方針)。
+    expect(after.expense.loan).toBeGreaterThan(0);
+    // ローン完済後(age 65: 35+30)はローン返済 0。
     const paidOff = result.find((y) => y.age === 65)!;
-    expect(paidOff.expense.housing).toBeCloseTo(0, 6);
+    expect(paidOff.expense.loan).toBeCloseTo(0, 6);
+  });
+
+  it('支出項目は年齢期間ごとに月額を切り替えられる(#31)', () => {
+    const result = runSimulation(
+      baseInput({
+        expense: {
+          items: [
+            {
+              name: '生活費',
+              inflationRate: 0,
+              periods: [
+                { startAge: 30, endAge: 44, monthlyAmount: 10 },
+                { startAge: 45, endAge: 60, monthlyAmount: 15 },
+              ],
+            },
+          ],
+        },
+      }),
+    );
+    // 物価上昇 0 なので月額 × 12 がそのまま年額になる。
+    expect(result.find((y) => y.age === 40)!.expense.items[0]!.amount).toBeCloseTo(10 * 12, 6);
+    expect(result.find((y) => y.age === 50)!.expense.items[0]!.amount).toBeCloseTo(15 * 12, 6);
+    // 期間外(61歳〜)はどの期間にも該当せず 0。
+    expect(result.find((y) => y.age === 70)!.expense.items[0]!.amount).toBe(0);
+  });
+
+  it('物価上昇率は項目ごとに(起点からの経過年数で)複利適用される(#31)', () => {
+    const result = runSimulation(
+      baseInput({
+        expense: {
+          items: [
+            expenseItem('据置き', 10, 0), // 上昇なし
+            expenseItem('上昇', 10, 2.0), // 年 2%
+          ],
+        },
+      }),
+    );
+    const y0 = result[0]!;
+    // 起点(i=0)ではどちらも月額 × 12。
+    expect(y0.expense.items[0]!.amount).toBeCloseTo(120, 6);
+    expect(y0.expense.items[1]!.amount).toBeCloseTo(120, 6);
+    // 10 年後: 据置きは不変、上昇は 2% 複利。
+    const y10 = result.find((y) => y.age === 40)!;
+    expect(y10.expense.items[0]!.amount).toBeCloseTo(120, 6);
+    expect(y10.expense.items[1]!.amount).toBeCloseTo(120 * Math.pow(1.02, 10), 6);
+  });
+
+  it('複数の支出項目が合算され、内訳 items に入力と同順で並ぶ(#31)', () => {
+    const result = runSimulation(
+      baseInput({
+        expense: {
+          items: [expenseItem('家賃', 8, 0), expenseItem('生活費', 15, 0)],
+        },
+      }),
+    );
+    const y = result[0]!;
+    expect(y.expense.items.map((it) => it.name)).toEqual(['家賃', '生活費']);
+    expect(y.expense.items[0]!.amount).toBeCloseTo(96, 6);
+    expect(y.expense.items[1]!.amount).toBeCloseTo(180, 6);
+    // 教育費・住宅ローン・イベントは支出項目とは別枠(子・イベント無しなので 0)。
+    expect(y.expense.education).toBe(0);
+    expect(y.expense.loan).toBe(0);
+    expect(y.expense.events).toBe(0);
   });
 
   it('退職後は給与が0になり、年金へ切り替わる', () => {
@@ -386,7 +476,7 @@ describe('runSimulation', () => {
           pension: 0,
           other: 0,
         },
-        expense: { rent: 0, living: 0, insurance: 0, fixed: 0, inflationRate: 0 },
+        expense: { items: [] },
         investment: {
           accounts: [
             {
