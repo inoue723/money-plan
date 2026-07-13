@@ -9,6 +9,7 @@
  */
 import { InputPanel } from './features/input/InputPanel';
 import { ResultPanel } from './features/result/ResultPanel';
+import { PlanTabs } from './features/plan/PlanTabs';
 import { DisclaimerBanner } from './components/DisclaimerBanner';
 
 export function App() {
@@ -17,6 +18,9 @@ export function App() {
       <header className="border-b border-slate-200 bg-white px-6 py-3">
         <h1 className="text-xl font-bold">資産推移シミュレーション</h1>
       </header>
+
+      {/* プランタブ(F-09。ヘッダー直下に Chrome ライクなタブを表示) */}
+      <PlanTabs />
 
       {/* S-01: 左=入力サイドパネル / 右=結果メイン */}
       <div className="flex flex-1 items-stretch">
