@@ -9,6 +9,7 @@
 import type { WorkPeriod, WorkStyle } from '@money-plan/finance-core';
 import { useSimulationStore } from '../../stores/simulationStore';
 import { NumberField } from '../../components/NumberField';
+import { AgeNumberField } from '../../components/AgeNumberField';
 import { SelectField } from '../../components/SelectField';
 
 const WORK_STYLE_OPTIONS: { value: WorkStyle; label: string }[] = [
@@ -106,7 +107,7 @@ export function IncomeSection() {
           </div>
 
           <div className="grid grid-cols-2 gap-2">
-            <NumberField
+            <AgeNumberField
               label="開始年齢"
               value={period.startAge}
               onChange={(v) => updatePeriod(i, { startAge: v })}
@@ -114,7 +115,7 @@ export function IncomeSection() {
               max={100}
               unit="歳"
             />
-            <NumberField
+            <AgeNumberField
               label="終了年齢"
               value={period.endAge}
               onChange={(v) => updatePeriod(i, { endAge: v })}

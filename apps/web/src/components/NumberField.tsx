@@ -6,7 +6,7 @@
  *   フォーカスアウト(blur)または Enter キーで確定し、値が変わっていれば `onChange` を呼ぶ(#28)。
  * - 確定時に `min` / `max` でクランプし、不正入力は 0(クランプ後)にフォールバックする。
  */
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 
 export interface NumberFieldProps {
   label: string;
@@ -21,6 +21,13 @@ export interface NumberFieldProps {
   /** 補足説明(小さく灰色で表示)。 */
   hint?: string;
   disabled?: boolean;
+  /**
+   * フォーカス中に入力欄の上へ表示する補足ツールチップを生成する(#47)。
+   * 引数は「現在編集中の数値」(入力途中の表示テキストをパースした値)で、
+   * 入力に追従してリアルタイムに再評価される。`null` を返すと非表示にする。
+   * 主に本人年齢入力に対する子どもの年齢表示に使う(`AgeNumberField`)。
+   */
+  focusTooltip?: (currentValue: number) => ReactNode | null;
 }
 
 const clamp = (n: number, min?: number, max?: number): number => {
@@ -41,8 +48,10 @@ export function NumberField({
   required,
   hint,
   disabled,
+  focusTooltip,
 }: NumberFieldProps) {
   const [text, setText] = useState<string>(String(value));
+  const [focused, setFocused] = useState(false);
 
   // 外部(ストア)の値が変わったら表示を同期する。ただし編集中の等価な入力は上書きしない。
   useEffect(() => {
@@ -51,13 +60,24 @@ export function NumberField({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [value]);
 
+  // フォーカス中のみ、現在編集中の値に対するツールチップを毎レンダー再評価する(入力に追従)。
+  const tooltip = focused && focusTooltip ? focusTooltip(Number(text)) : null;
+
   return (
     <label className="flex flex-col gap-1">
       <span className="text-xs font-medium text-slate-600">
         {label}
         {required && <span className="ml-0.5 text-rose-500">*</span>}
       </span>
-      <div className="flex items-center gap-1.5">
+      <div className="relative flex items-center gap-1.5">
+        {tooltip != null && (
+          <div
+            role="tooltip"
+            className="absolute bottom-full left-0 z-10 mb-1 w-max max-w-[16rem] whitespace-pre-line rounded-md bg-slate-800 px-2 py-1 text-[11px] leading-tight text-white shadow-md"
+          >
+            {tooltip}
+          </div>
+        )}
         <input
           type="number"
           inputMode="decimal"
@@ -67,11 +87,13 @@ export function NumberField({
           max={max}
           step={step}
           disabled={disabled}
+          onFocus={() => setFocused(true)}
           onChange={(e) => {
             // 入力中は表示テキストのみ更新する(ストアへの書き戻しは確定時に行う)。
             setText(e.target.value);
           }}
           onBlur={() => {
+            setFocused(false);
             const n = Number(text);
             const next = Number.isNaN(n) ? clamp(0, min, max) : clamp(n, min, max);
             setText(String(next));

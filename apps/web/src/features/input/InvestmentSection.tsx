@@ -9,6 +9,7 @@
 import type { AccountType, InvestmentAccount } from '@money-plan/finance-core';
 import { useSimulationStore } from '../../stores/simulationStore';
 import { NumberField } from '../../components/NumberField';
+import { AgeNumberField } from '../../components/AgeNumberField';
 import { SelectField } from '../../components/SelectField';
 import { ToggleField } from '../../components/ToggleField';
 
@@ -133,7 +134,7 @@ function AccountFields({
           unit="%"
           hint="0〜15%"
         />
-        <NumberField
+        <AgeNumberField
           label="積立開始年齢"
           value={account.startAge}
           onChange={(v) => onChange({ ...account, startAge: v })}
@@ -141,7 +142,7 @@ function AccountFields({
           max={100}
           unit="歳"
         />
-        <NumberField
+        <AgeNumberField
           label="積立終了年齢"
           value={account.endAge}
           onChange={(v) => onChange({ ...account, endAge: v })}
@@ -165,7 +166,7 @@ function AccountFields({
         />
         {withdrawal && (
           <div className="mt-2 grid grid-cols-2 gap-2">
-            <NumberField
+            <AgeNumberField
               label="開始年齢"
               value={withdrawal.startAge}
               onChange={(v) => onChange({ ...account, withdrawal: { ...withdrawal, startAge: v } })}
