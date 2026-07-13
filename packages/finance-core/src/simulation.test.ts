@@ -33,7 +33,18 @@ const baseInput = (overrides: Partial<SimulationInput> = {}): SimulationInput =>
   },
   expense: { rent: 8, living: 15, insurance: 1, fixed: 2, inflationRate: 1.0 },
   events: [],
-  investment: { monthlyAmount: 0, annualReturn: 3.0, endAge: 65, useNisa: true },
+  investment: {
+    accounts: [
+      {
+        name: 'NISA',
+        accountType: 'nisa',
+        monthlyAmount: 0,
+        annualReturn: 3.0,
+        startAge: 30,
+        endAge: 65,
+      },
+    ],
+  },
   ...overrides,
 });
 
@@ -339,14 +350,68 @@ describe('runSimulation', () => {
   it('積立投資で投資資産が増え、運用益が計上される', () => {
     const result = runSimulation(
       baseInput({
-        investment: { monthlyAmount: 5, annualReturn: 5.0, endAge: 65, useNisa: true },
+        investment: {
+          accounts: [
+            {
+              name: 'NISA',
+              accountType: 'nisa',
+              monthlyAmount: 5,
+              annualReturn: 5.0,
+              startAge: 30,
+              endAge: 65,
+            },
+          ],
+        },
       }),
     );
     // 初年度: 積立 60万 + 運用益。
     expect(result[0]!.income.investmentGain).toBeGreaterThan(0);
     expect(result[0]!.investmentValue).toBeGreaterThan(0);
+    // 年間積立額(全枠合計)が結果に記録される(月5万 × 12 = 60万)。
+    expect(result[0]!.investmentContribution).toBe(60);
+    // 積立終了年齢(65)以降は積立額 0。
+    expect(result.find((y) => y.age === 65)!.investmentContribution).toBe(0);
     // 投資資産は増加していく。
     expect(result[10]!.investmentValue).toBeGreaterThan(result[0]!.investmentValue);
+  });
+
+  it('NISA上限を超える積立は投資されず預金に残り、上限到達年に注記される', () => {
+    // 月40万(480万/年)を高収入で積立 → 年間上限360万を毎年超過し、いずれ生涯枠1800万に到達。
+    const result = runSimulation(
+      baseInput({
+        basic: { currentAge: 30, endAge: 90, savings: 0, investments: 0 },
+        income: {
+          workPeriods: [workPeriod({ startAge: 30, endAge: 64, income: 3000, raiseRate: 0 })],
+          retirementBonus: 0,
+          pension: 0,
+          other: 0,
+        },
+        expense: { rent: 0, living: 0, insurance: 0, fixed: 0, inflationRate: 0 },
+        investment: {
+          accounts: [
+            {
+              name: 'NISA',
+              accountType: 'nisa',
+              monthlyAmount: 40,
+              annualReturn: 0,
+              startAge: 30,
+              endAge: 90,
+            },
+          ],
+        },
+      }),
+    );
+
+    // 生涯枠1800万 ÷ 年間360万 = 5年で上限到達。以降は投資資産が増えない。
+    const capReachedYear = result.find((y) => y.events.includes('NISA上限到達'));
+    expect(capReachedYear).toBeDefined();
+
+    // 上限到達後、投資評価額は1800万で頭打ち(利回り0のため)。
+    const last = result[result.length - 1]!;
+    expect(last.investmentValue).toBeCloseTo(1800, 6);
+
+    // 積み立てられなかった分は預金に残るため、預金は投資評価額を大きく上回って積み上がる。
+    expect(last.savings).toBeGreaterThan(last.investmentValue);
   });
 
   it('通常入力(約72年分)を高速に計算できる', () => {

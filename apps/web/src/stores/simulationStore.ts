@@ -66,11 +66,18 @@ export const DEFAULT_INPUT: SimulationInput = {
   },
   events: [],
   investment: {
-    monthlyAmount: 0, // SPEC.md 2.2 デフォルト 0
-    annualReturn: 3.0, // SPEC.md 2.2 デフォルト 3.0%
-    endAge: 65, // 積立終了年齢。デフォルトは退職年齢(65)
-    useNisa: true, // NISA 利用(非課税枠内の運用益を非課税)
-    withdrawal: undefined,
+    // デフォルトは現行相当の 1 枠(NISA)。SPEC.md 2.2 の各デフォルト値に準拠。
+    accounts: [
+      {
+        name: 'NISA',
+        accountType: 'nisa', // NISA 利用(非課税枠内の運用益を非課税)
+        monthlyAmount: 0, // SPEC.md 2.2 デフォルト 0
+        annualReturn: 3.0, // SPEC.md 2.2 デフォルト 3.0%
+        startAge: 30, // 積立開始年齢。デフォルトは現在年齢(30)
+        endAge: 65, // 積立終了年齢。デフォルトは退職年齢(65)
+        withdrawal: undefined,
+      },
+    ],
   },
 };
 
