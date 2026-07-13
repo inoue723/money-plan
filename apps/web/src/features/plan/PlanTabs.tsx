@@ -6,23 +6,48 @@
  * - 「+」で新規プランタブを追加、末尾がアクティブになる。
  * - 未保存(ドラフトが保存内容と異なる)のタブは名前の右に青い ● を表示する。
  * - タブの「×」で閉じる操作は削除確認ダイアログを挟む。
+ * - タブを右クリック(コンテキストメニュー)すると「複製」でき、複製タブが直後に開く(#45)。
  * - プラン名の編集・保存/破棄は入力上部の「プラン概要」(PlanSummary)で行う。
  * - アクティブタブは下境界を持たず、直下のプラン内容(白い入力パネル)へつながる。
  */
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { isTabDirty, useSimulationStore } from '../../stores/simulationStore';
 
 export function PlanTabs() {
   const tabs = useSimulationStore((s) => s.tabs);
   const activeTabId = useSimulationStore((s) => s.activeTabId);
   const addTab = useSimulationStore((s) => s.addTab);
+  const duplicateTab = useSimulationStore((s) => s.duplicateTab);
   const selectTab = useSimulationStore((s) => s.selectTab);
   const closeTab = useSimulationStore((s) => s.closeTab);
 
   // 削除確認ダイアログの対象タブ ID(null で非表示)。
   const [pendingCloseId, setPendingCloseId] = useState<string | null>(null);
 
+  // 右クリックのコンテキストメニュー(対象タブ ID と表示座標。null で非表示)。
+  const [contextMenu, setContextMenu] = useState<{ tabId: string; x: number; y: number } | null>(
+    null,
+  );
+
+  // メニュー表示中は、外側クリック・Escape・スクロールで閉じる。
+  useEffect(() => {
+    if (!contextMenu) return;
+    const close = () => setContextMenu(null);
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setContextMenu(null);
+    };
+    window.addEventListener('click', close);
+    window.addEventListener('scroll', close, true);
+    window.addEventListener('keydown', onKeyDown);
+    return () => {
+      window.removeEventListener('click', close);
+      window.removeEventListener('scroll', close, true);
+      window.removeEventListener('keydown', onKeyDown);
+    };
+  }, [contextMenu]);
+
   const pendingTab = tabs.find((t) => t.id === pendingCloseId) ?? null;
+  const contextTab = tabs.find((t) => t.id === contextMenu?.tabId) ?? null;
 
   return (
     <div className="flex items-end gap-1 overflow-x-auto bg-slate-100 px-3 pt-2">
@@ -33,6 +58,10 @@ export function PlanTabs() {
           <div
             key={tab.id}
             onClick={() => selectTab(tab.id)}
+            onContextMenu={(e) => {
+              e.preventDefault();
+              setContextMenu({ tabId: tab.id, x: e.clientX, y: e.clientY });
+            }}
             className={`group flex max-w-[220px] shrink-0 cursor-pointer items-center gap-1.5 rounded-t-md border px-3 py-1.5 text-sm ${
               active
                 ? // 下境界を透明にし -mb-px で 1px 重ね、白い入力パネルへ継ぎ目なくつなげる。
@@ -73,6 +102,25 @@ export function PlanTabs() {
       >
         +
       </button>
+
+      {contextMenu && contextTab && (
+        <div
+          className="fixed z-50 min-w-[140px] rounded-md border border-slate-200 bg-white py-1 text-sm shadow-lg"
+          style={{ top: contextMenu.y, left: contextMenu.x }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <button
+            type="button"
+            onClick={() => {
+              duplicateTab(contextTab.id);
+              setContextMenu(null);
+            }}
+            className="block w-full px-3 py-1.5 text-left text-slate-700 hover:bg-slate-100"
+          >
+            複製
+          </button>
+        </div>
+      )}
 
       {pendingTab && (
         <div

@@ -220,6 +220,8 @@ export interface SimulationState {
 
   /** 新しいプランタブを追加してアクティブにする。 */
   addTab: () => void;
+  /** 既存タブを複製し、そのコピーをアクティブにする(入力一式はディープコピー)。 */
+  duplicateTab: (id: string) => void;
   /** タブを切り替える(そのタブのドラフトを入力に読込む)。 */
   selectTab: (id: string) => void;
   /** タブを閉じる(プラン削除)。最後の 1 枚を閉じたら新しい既定タブを作る。 */
@@ -276,6 +278,25 @@ export const useSimulationStore = create<SimulationState>()(
             input: tab.draftInput,
             selectedYear: null,
           };
+        }),
+      duplicateTab: (id) =>
+        set((s) => {
+          const idx = s.tabs.findIndex((t) => t.id === id);
+          if (idx === -1) return {};
+          const source = s.tabs[idx]!;
+          // 現在表示中の入力(ドラフト)をディープコピーし、元プランと参照を共有しない。
+          const copy = cloneInput(source.draftInput);
+          const tab: PlanTab = {
+            id: createPlanId(),
+            // 名前は全タブでユニーク(#12)。既存の元プラン名が使われているため「元名 (2)」…になる。
+            name: uniquePlanName(source.name, s.tabs, ''),
+            // 生成直後は未保存でない(保存/ドラフトともに独立コピー)。
+            savedInput: cloneInput(copy),
+            draftInput: copy,
+          };
+          // 元タブの直後に挿入し、複製したタブをアクティブにする。
+          const tabs = [...s.tabs.slice(0, idx + 1), tab, ...s.tabs.slice(idx + 1)];
+          return { tabs, activeTabId: tab.id, input: tab.draftInput, selectedYear: null };
         }),
       selectTab: (id) =>
         set((s) => {
