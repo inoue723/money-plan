@@ -20,6 +20,7 @@
 import {
   BASIC_DEDUCTION,
   BLUE_RETURN_DEDUCTION,
+  CARE_INSURANCE_AGE,
   CHILD_ALLOWANCE,
   CHILD_ALLOWANCE_THIRD_CHILD_MONTHLY,
   DEPENDENT_DEDUCTION,
@@ -33,6 +34,7 @@ import {
   SOCIAL_INSURANCE,
   SPOUSE_DEDUCTION,
   type DependentCategory,
+  type NhiCategoryRate,
 } from './constants';
 import type { TaxBreakdown } from './types';
 
@@ -54,6 +56,16 @@ const floorYen = (yen: number): number => Math.floor(yen + 1e-6);
 
 /** 課税所得の 1,000 円未満を切り捨てる。 */
 const roundDownTo1000 = (yen: number): number => Math.floor(yen / 1000) * 1000;
+
+/**
+ * 介護保険第2号被保険者(40〜64歳)に該当するかを判定する。
+ * 該当する年は健康保険料・国民健康保険料に介護分が上乗せされる。
+ * `age` が未指定(undefined)の場合は判定できないため false(介護分を課さない)とする。
+ */
+function isCareInsuranceAge(age: number | undefined): boolean {
+  if (age === undefined) return false;
+  return age >= CARE_INSURANCE_AGE.from && age <= CARE_INSURANCE_AGE.to;
+}
 
 /**
  * `upTo` の昇順に並んだ速算表から、value が属する区分を返す。
@@ -110,11 +122,20 @@ export interface SocialInsuranceBreakdown {
  * 社会保険料(円)を種別ごとに概算する。
  * 各種別 = 給与収入 × 種別料率。合計が年間上限を超える場合は各種別を按分して上限に収める
  * (内訳の合計と total が一致するように比例縮小する)。
+ *
+ * @param grossSalaryYen 額面給与(円)。
+ * @param age 本人の年齢(歳)。40〜64歳の年は健康保険料に介護保険料(介護分)を上乗せする。
+ *   未指定の場合は介護分を課さない。
  */
-export function calcSocialInsurance(grossSalaryYen: number): SocialInsuranceBreakdown {
-  const { rates, annualCap } = SOCIAL_INSURANCE;
+export function calcSocialInsurance(
+  grossSalaryYen: number,
+  age?: number,
+): SocialInsuranceBreakdown {
+  const { rates, careRate, annualCap } = SOCIAL_INSURANCE;
 
-  let health = grossSalaryYen * rates.health;
+  // 40〜64歳(介護保険第2号被保険者)は健康保険料率に介護保険料率を上乗せする。
+  const healthRate = rates.health + (isCareInsuranceAge(age) ? careRate : 0);
+  let health = grossSalaryYen * healthRate;
   let pension = grossSalaryYen * rates.pension;
   let employment = grossSalaryYen * rates.employment;
   const total = health + pension + employment;
@@ -218,6 +239,8 @@ export function calcResidentTax(taxableIncomeYen: number): number {
 export interface SalaryTaxInput extends PersonalDeductionOptions {
   /** 額面給与(年額・万円)。 */
   grossSalary: number;
+  /** 本人の年齢(歳)。40〜64歳の年は健康保険料に介護分が上乗せされる。未指定なら介護分なし。 */
+  age?: number;
 }
 
 /** 給与所得者の税・社会保険料計算の結果(金額は万円)。 */
@@ -238,7 +261,7 @@ export function calcSalaryTax(input: SalaryTaxInput): SalaryTaxResult {
   const grossYen = toYen(input.grossSalary);
 
   const salaryIncome = calcSalaryIncome(grossYen);
-  const social = calcSocialInsurance(grossYen);
+  const social = calcSocialInsurance(grossYen, input.age);
   const deductions = calcPersonalDeductions(input);
 
   const incomeTaxable = salaryIncome - social.total - deductions.incomeTax;
@@ -280,16 +303,38 @@ export function calcBusinessIncome(businessIncomeYen: number): number {
 }
 
 /**
+ * 国民健康保険料の1区分(円)を求める。
+ * 所得割 = (所得 − 基礎控除)× incomeRate、均等割 = perCapita(本人1人分)。区分ごとの賦課限度額で頭打ち。
+ */
+function calcNhiCategory(baseYen: number, category: NhiCategoryRate): number {
+  const premium = baseYen * category.incomeRate + category.perCapita;
+  return Math.min(premium, category.annualCap);
+}
+
+/**
  * 国民健康保険料(円)を概算する。
- * 所得割 = (所得 − 基礎控除)× 料率、均等割 = 定額(本人1人分)。賦課限度額で頭打ち。
+ * 区分(医療分・後期高齢者支援金分・子ども子育て支援金分・介護分)ごとに
+ * 所得割 +均等割 を算定し、賦課限度額は区分ごとに独立して適用する。
  *
  * @param incomeYen 算定基礎となる所得(円)。青色申告特別控除後の事業所得を渡す。
+ * @param age 本人の年齢(歳)。40〜64歳の年のみ介護分を賦課する。未指定の場合は介護分を課さない。
  */
-export function calcNationalHealthInsurance(incomeYen: number): number {
-  const { incomeRate, perCapita, deduction, annualCap } = NATIONAL_HEALTH_INSURANCE;
+export function calcNationalHealthInsurance(incomeYen: number, age?: number): number {
+  const { deduction, medical, elderlySupport, childRearingSupport, care } =
+    NATIONAL_HEALTH_INSURANCE;
   const base = Math.max(0, incomeYen - deduction);
-  const premium = base * incomeRate + perCapita;
-  return floorYen(Math.min(premium, annualCap));
+
+  let premium =
+    calcNhiCategory(base, medical) +
+    calcNhiCategory(base, elderlySupport) +
+    calcNhiCategory(base, childRearingSupport);
+
+  // 40〜64歳(介護保険第2号被保険者)の年のみ介護分を賦課する。
+  if (isCareInsuranceAge(age)) {
+    premium += calcNhiCategory(base, care);
+  }
+
+  return floorYen(premium);
 }
 
 /**
@@ -298,9 +343,13 @@ export function calcNationalHealthInsurance(incomeYen: number): number {
  * `health` に国保、`pension` に国民年金を割り当てる。
  *
  * @param incomeYen 国保の算定基礎となる所得(円)。青色申告特別控除後の事業所得を渡す。
+ * @param age 本人の年齢(歳)。40〜64歳の年は国保に介護分が加わる。未指定の場合は介護分を課さない。
  */
-export function calcSelfEmployedSocialInsurance(incomeYen: number): SocialInsuranceBreakdown {
-  const health = calcNationalHealthInsurance(incomeYen);
+export function calcSelfEmployedSocialInsurance(
+  incomeYen: number,
+  age?: number,
+): SocialInsuranceBreakdown {
+  const health = calcNationalHealthInsurance(incomeYen, age);
   const pension = NATIONAL_PENSION.annualAmount;
   return { health, pension, employment: 0, total: health + pension };
 }
@@ -309,6 +358,8 @@ export function calcSelfEmployedSocialInsurance(incomeYen: number): SocialInsura
 export interface SelfEmployedTaxInput extends PersonalDeductionOptions {
   /** 事業所得(売上 − 経費。年額・万円)。 */
   businessIncome: number;
+  /** 本人の年齢(歳)。40〜64歳の年は国民健康保険に介護分が加わる。未指定なら介護分なし。 */
+  age?: number;
 }
 
 /** 個人事業主の税・社会保険料計算の結果(金額は万円)。 */
@@ -330,7 +381,7 @@ export function calcSelfEmployedTax(input: SelfEmployedTaxInput): SelfEmployedTa
   const grossYen = toYen(input.businessIncome);
 
   const businessIncome = calcBusinessIncome(grossYen);
-  const social = calcSelfEmployedSocialInsurance(businessIncome);
+  const social = calcSelfEmployedSocialInsurance(businessIncome, input.age);
   const deductions = calcPersonalDeductions(input);
 
   const incomeTaxable = businessIncome - social.total - deductions.incomeTax;
