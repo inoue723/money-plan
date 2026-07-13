@@ -12,8 +12,16 @@
  *   100ms 以内(SPEC.md 5)で回す前提の実装とする。
  * - `selectedYear`(年次詳細で選択中の年)も保持する。#10(グラフ)がクリックで設定し、
  *   #11(年次内訳)が購読する共有 state。
+ *
+ * ## 永続化 / プラン保存(issue #12, F-09, SPEC.md 4.1)
+ * - `persist` middleware で現在入力(`input`)と保存済みプラン一覧(`plans`)を
+ *   localStorage に保存する。保存はローカルのみで、外部送信は一切行わない。
+ * - スキーマは `version`(下記 PERSIST_VERSION)を持ち、将来の入力形状変更に対して
+ *   `migrate` でマイグレーションできるようにしておく。
+ * - `selectedYear` は UI の一時状態のため永続化しない(partialize で除外)。
  */
 import { create } from 'zustand';
+import { persist } from 'zustand/middleware';
 import { runSimulation } from '@money-plan/finance-core';
 import type {
   BasicInput,
@@ -104,11 +112,49 @@ export const DEFAULT_INPUT: SimulationInput = {
 // ストア定義
 // ---------------------------------------------------------------------------
 
+/**
+ * 名前付き保存プラン(F-09)。`input` はその時点の入力一式のスナップショット。
+ * `savedAt` は保存時刻(epoch ミリ秒)で、一覧の並び順・表示に使う。
+ */
+export interface SavedPlan {
+  /** 一意 ID(保存時に採番)。読込・削除の対象指定に使う。 */
+  id: string;
+  /** ユーザーが付けたプラン名。 */
+  name: string;
+  /** 保存時点の入力一式のスナップショット(独立コピー)。 */
+  input: SimulationInput;
+  /** 保存時刻(epoch ミリ秒)。 */
+  savedAt: number;
+}
+
+/**
+ * 永続化スキーマのバージョン。入力形状(`SimulationInput`)や `plans` の構造を
+ * 破壊的に変更したら増やし、`persist` の `migrate` で旧データを変換する。
+ */
+export const PERSIST_VERSION = 1;
+
+/** localStorage のキー(SPEC.md 4.1: ローカルのみに保存)。 */
+export const PERSIST_KEY = 'money-plan/simulation';
+
+/** 入力一式の独立コピーを作る(保存プランと現在入力が参照を共有しないように)。 */
+const cloneInput = (input: SimulationInput): SimulationInput =>
+  typeof structuredClone === 'function'
+    ? structuredClone(input)
+    : (JSON.parse(JSON.stringify(input)) as SimulationInput);
+
+/** 保存プランの一意 ID を採番する。 */
+const createPlanId = (): string =>
+  typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+    ? crypto.randomUUID()
+    : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
 export interface SimulationState {
   /** 入力一式(唯一の真実。結果はここから派生する)。 */
   input: SimulationInput;
   /** 年次詳細で選択中の年(西暦)。未選択は null。#10 が設定し #11 が購読する。 */
   selectedYear: number | null;
+  /** 保存済みプラン一覧(F-09)。localStorage に永続化される。 */
+  plans: SavedPlan[];
 
   /** F-01 基本情報の部分更新。 */
   setBasic: (patch: Partial<BasicInput>) => void;
@@ -127,29 +173,79 @@ export interface SimulationState {
 
   /** 選択年を設定する(#10 のグラフクリック等から)。 */
   setSelectedYear: (year: number | null) => void;
+
+  /** 現在の入力を名前付きプランとして保存する(F-09)。ID を返す。 */
+  savePlan: (name: string) => string;
+  /** 保存済みプランを読込み、入力一式を置換する(即時再計算に反映)。 */
+  loadPlan: (id: string) => void;
+  /** 保存済みプランを削除する。 */
+  deletePlan: (id: string) => void;
 }
 
-export const useSimulationStore = create<SimulationState>((set) => ({
-  input: DEFAULT_INPUT,
-  selectedYear: null,
+export const useSimulationStore = create<SimulationState>()(
+  persist(
+    (set, get) => ({
+      input: DEFAULT_INPUT,
+      selectedYear: null,
+      plans: [],
 
-  setBasic: (patch) =>
-    set((state) => ({ input: { ...state.input, basic: { ...state.input.basic, ...patch } } })),
-  setFamily: (patch) =>
-    set((state) => ({ input: { ...state.input, family: { ...state.input.family, ...patch } } })),
-  setIncome: (patch) =>
-    set((state) => ({ input: { ...state.input, income: { ...state.input.income, ...patch } } })),
-  setExpense: (patch) =>
-    set((state) => ({ input: { ...state.input, expense: { ...state.input.expense, ...patch } } })),
-  setInvestment: (patch) =>
-    set((state) => ({
-      input: { ...state.input, investment: { ...state.input.investment, ...patch } },
-    })),
-  setEvents: (events) => set((state) => ({ input: { ...state.input, events } })),
-  resetInput: () => set({ input: DEFAULT_INPUT, selectedYear: null }),
+      setBasic: (patch) =>
+        set((state) => ({ input: { ...state.input, basic: { ...state.input.basic, ...patch } } })),
+      setFamily: (patch) =>
+        set((state) => ({
+          input: { ...state.input, family: { ...state.input.family, ...patch } },
+        })),
+      setIncome: (patch) =>
+        set((state) => ({
+          input: { ...state.input, income: { ...state.input.income, ...patch } },
+        })),
+      setExpense: (patch) =>
+        set((state) => ({
+          input: { ...state.input, expense: { ...state.input.expense, ...patch } },
+        })),
+      setInvestment: (patch) =>
+        set((state) => ({
+          input: { ...state.input, investment: { ...state.input.investment, ...patch } },
+        })),
+      setEvents: (events) => set((state) => ({ input: { ...state.input, events } })),
+      resetInput: () => set({ input: DEFAULT_INPUT, selectedYear: null }),
 
-  setSelectedYear: (year) => set({ selectedYear: year }),
-}));
+      setSelectedYear: (year) => set({ selectedYear: year }),
+
+      savePlan: (name) => {
+        const id = createPlanId();
+        const plan: SavedPlan = {
+          id,
+          name,
+          input: cloneInput(get().input),
+          savedAt: Date.now(),
+        };
+        set((state) => ({ plans: [...state.plans, plan] }));
+        return id;
+      },
+      loadPlan: (id) => {
+        const plan = get().plans.find((p) => p.id === id);
+        if (!plan) return;
+        // 保存プランを破壊しないよう独立コピーで置換する。参照が変わるため即時再計算される。
+        set({ input: cloneInput(plan.input), selectedYear: null });
+      },
+      deletePlan: (id) => set((state) => ({ plans: state.plans.filter((p) => p.id !== id) })),
+    }),
+    {
+      name: PERSIST_KEY,
+      version: PERSIST_VERSION,
+      // selectedYear は一時的な UI 状態なので永続化しない。
+      partialize: (state) => ({ input: state.input, plans: state.plans }),
+      // 破壊的なスキーマ変更時はここで旧バージョンのデータを変換する。
+      migrate: (persisted, version) => {
+        if (version < PERSIST_VERSION) {
+          // v1 が初版のため現状は変換不要。将来のバージョンで分岐を追加する。
+        }
+        return persisted as { input: SimulationInput; plans: SavedPlan[] };
+      },
+    },
+  ),
+);
 
 // ---------------------------------------------------------------------------
 // 派生セレクタ(結果は入力からメモ化算出)

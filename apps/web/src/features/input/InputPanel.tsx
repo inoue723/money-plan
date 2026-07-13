@@ -8,6 +8,7 @@
  */
 import { useSimulationStore } from '../../stores/simulationStore';
 import { Accordion } from '../../components/Accordion';
+import { PlanManager } from '../plan/PlanManager';
 import { BasicSection } from './BasicSection';
 import { IncomeSection } from './IncomeSection';
 import { ExpenseSection } from './ExpenseSection';
@@ -30,6 +31,8 @@ export function InputPanel() {
           リセット
         </button>
       </div>
+
+      <PlanManager />
 
       <Accordion title="基本情報" defaultOpen>
         <BasicSection />
