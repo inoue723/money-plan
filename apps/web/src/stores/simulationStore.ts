@@ -25,7 +25,8 @@
  *   保存はローカルのみで、外部送信は一切行わない。`selectedYear` は一時 UI 状態のため
  *   永続化しない(partialize で除外)。
  * - スキーマは `version`(下記 PERSIST_VERSION)を持ち、`migrate` で旧データを変換する
- *   (v1: `{ input, plans }` → v2: `{ input, tabs, activeTabId }`)。
+ *   (v1: `{ input, plans }` → v2: `{ input, tabs, activeTabId }`、
+ *    v2 → v3: 名前が「家賃」の ExpenseItem を家賃専用型 `expense.rent` へ変換)。
  */
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
@@ -37,6 +38,7 @@ import type {
   IncomeInput,
   InvestmentInput,
   LifeEvent,
+  RentInput,
   SimulationInput,
   SimulationResult,
 } from '@money-plan/finance-core';
@@ -73,14 +75,14 @@ export const DEFAULT_INPUT: SimulationInput = {
     other: 0,
   },
   expense: {
+    // 家賃(#50)は専用型で保持する。現行デフォルト値を「現在年齢(30)〜終了年齢(90)」の1期間で表す。
+    rent: {
+      inflationRate: 1.0,
+      periods: [{ startAge: 30, endAge: 90, monthlyAmount: 8 }],
+    },
     // 支出項目(#31)。現行デフォルト値を「現在年齢(30)〜終了年齢(90)」の1期間で表す。
-    // 物価上昇は現行挙動に合わせ、家賃・生活費のみ 1.0%(保険料・その他固定費は 0%)。
+    // 物価上昇は現行挙動に合わせ、生活費のみ 1.0%(保険料・その他固定費は 0%)。
     items: [
-      {
-        name: '家賃',
-        inflationRate: 1.0,
-        periods: [{ startAge: 30, endAge: 90, monthlyAmount: 8 }],
-      },
       {
         name: '生活費',
         inflationRate: 1.0,
@@ -140,7 +142,7 @@ export interface PlanTab {
  * 永続化スキーマのバージョン。`tabs` や入力形状(`SimulationInput`)の構造を
  * 破壊的に変更したら増やし、`persist` の `migrate` で旧データを変換する。
  */
-export const PERSIST_VERSION = 2;
+export const PERSIST_VERSION = 3;
 
 /** localStorage のキー(SPEC.md 4.1: ローカルのみに保存)。 */
 export const PERSIST_KEY = 'money-plan/simulation';
@@ -150,6 +152,32 @@ const cloneInput = (input: SimulationInput): SimulationInput =>
   typeof structuredClone === 'function'
     ? structuredClone(input)
     : (JSON.parse(JSON.stringify(input)) as SimulationInput);
+
+/**
+ * v2 → v3 マイグレーション(#50)。名前が「家賃」の ExpenseItem を家賃専用型(rent)へ変換する。
+ * - 既に rent があれば変換しない。
+ * - 「家賃」項目が無ければ rent は未設定のまま(賃貸でない扱い)。
+ * - 更新料は旧データに存在しないため付与しない。
+ */
+const migrateExpenseRent = (input: SimulationInput): SimulationInput => {
+  const { expense } = input;
+  if (expense.rent) return input;
+  const idx = expense.items.findIndex((it) => it.name === '家賃');
+  if (idx === -1) return input;
+  const rentItem = expense.items[idx]!;
+  const rent: RentInput = {
+    inflationRate: rentItem.inflationRate,
+    periods: rentItem.periods.map((p) => ({
+      startAge: p.startAge,
+      endAge: p.endAge,
+      monthlyAmount: p.monthlyAmount,
+    })),
+  };
+  return {
+    ...input,
+    expense: { rent, items: expense.items.filter((_, i) => i !== idx) },
+  };
+};
 
 /** タブの一意 ID を採番する。 */
 const createPlanId = (): string =>
@@ -359,6 +387,7 @@ export const useSimulationStore = create<SimulationState>()(
       }),
       // 破壊的なスキーマ変更時はここで旧バージョンのデータを変換する。
       migrate: (persisted, version) => {
+        let data: { input: SimulationInput; tabs: PlanTab[]; activeTabId: string };
         if (version < 2) {
           // v1: { input, plans: SavedPlan[] } → v2: タブモデルへ変換。
           const old = persisted as {
@@ -382,13 +411,25 @@ export const useSimulationStore = create<SimulationState>()(
               draftInput: cloneInput(p.input),
             });
           }
-          return { input: old.input, tabs, activeTabId: active.id };
+          data = { input: old.input, tabs, activeTabId: active.id };
+        } else {
+          data = persisted as { input: SimulationInput; tabs: PlanTab[]; activeTabId: string };
         }
-        return persisted as {
-          input: SimulationInput;
-          tabs: PlanTab[];
-          activeTabId: string;
-        };
+
+        if (version < 3) {
+          // v2 → v3(#50): 名前が「家賃」の ExpenseItem を rent へ変換する。
+          data = {
+            ...data,
+            input: migrateExpenseRent(data.input),
+            tabs: data.tabs.map((t) => ({
+              ...t,
+              savedInput: migrateExpenseRent(t.savedInput),
+              draftInput: migrateExpenseRent(t.draftInput),
+            })),
+          };
+        }
+
+        return data;
       },
     },
   ),
