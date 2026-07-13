@@ -10,8 +10,8 @@
  * - 結果は `useSimulationResult()` から取得する。`runSimulation` の呼び出しは
  *   入力の参照が変わったときだけ行い(メモ化)、入力変更→即時再計算のパイプラインを
  *   100ms 以内(SPEC.md 5)で回す前提の実装とする。
- * - `selectedYear`(年次詳細で選択中の年)も保持する。#10(グラフ)がクリックで設定し、
- *   #11(年次内訳)が購読する共有 state。
+ * - `selectedYear`(選択中の年)も保持する。グラフ(#10)のクリックや CF表(#26)の
+ *   西暦ヘッダークリックで設定し、グラフの選択年マーカーと CF表の列ハイライトが購読する共有 state。
  *
  * ## プランタブ / 永続化(issue #12, F-09, SPEC.md 4.1)
  * - プランは「タブ」として複数保持する(`tabs`)。各タブは保存済みスナップショット
@@ -195,7 +195,7 @@ const INITIAL_TAB = makeTab('プラン 1');
 export interface SimulationState {
   /** 入力一式(唯一の真実。結果はここから派生する)。アクティブタブのドラフトと同期する。 */
   input: SimulationInput;
-  /** 年次詳細で選択中の年(西暦)。未選択は null。#10 が設定し #11 が購読する。 */
+  /** 選択中の年(西暦)。未選択は null。グラフ/CF表がクリックで設定し、双方が購読する。 */
   selectedYear: number | null;
   /** プランタブ一覧(F-09)。localStorage に永続化される。 */
   tabs: PlanTab[];
@@ -215,7 +215,7 @@ export interface SimulationState {
   /** F-04 ライフイベント一覧の置き換え。 */
   setEvents: (events: LifeEvent[]) => void;
 
-  /** 選択年を設定する(#10 のグラフクリック等から)。 */
+  /** 選択年を設定する(グラフのクリックや CF表の西暦ヘッダークリックから)。 */
   setSelectedYear: (year: number | null) => void;
 
   /** 新しいプランタブを追加してアクティブにする。 */
