@@ -159,10 +159,7 @@ export function runSimulation(input: SimulationInput): SimulationResult {
 
   // 年をまたいで持ち越す state(前年 state → 当年 state の明示的な畳み込み)。
   let savings = basic.savings;
-  let investmentState: InvestmentState = initInvestmentState(
-    basic.investments,
-    investment.accounts,
-  );
+  let investmentState: InvestmentState = initInvestmentState(investment.accounts);
   // NISA 上限で積立が停止したことを結果側で可視化するため、最初に停止した年に一度だけ注記する。
   let nisaCapNotified = false;
 

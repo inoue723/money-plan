@@ -36,7 +36,7 @@ const expenseItem = (
 
 /** 最小構成の入力を生成し、必要な部分だけ上書きする。 */
 const baseInput = (overrides: Partial<SimulationInput> = {}): SimulationInput => ({
-  basic: { currentAge: 30, endAge: 90, savings: 500, investments: 0 },
+  basic: { currentAge: 30, endAge: 90, savings: 500 },
   family: { children: [] },
   income: {
     workPeriods: [workPeriod()],
@@ -58,6 +58,7 @@ const baseInput = (overrides: Partial<SimulationInput> = {}): SimulationInput =>
       {
         name: 'NISA',
         accountType: 'nisa',
+        initialHolding: 0,
         monthlyAmount: 0,
         annualReturn: 3.0,
         startAge: 30,
@@ -71,7 +72,7 @@ const baseInput = (overrides: Partial<SimulationInput> = {}): SimulationInput =>
 describe('runSimulation', () => {
   it('現在年齢から終了年齢まで1年刻みで結果を返す', () => {
     const result = runSimulation(
-      baseInput({ basic: { currentAge: 30, endAge: 90, savings: 500, investments: 0 } }),
+      baseInput({ basic: { currentAge: 30, endAge: 90, savings: 500 } }),
     );
     expect(result).toHaveLength(90 - 30 + 1);
     expect(result[0]!.age).toBe(30);
@@ -81,9 +82,7 @@ describe('runSimulation', () => {
   });
 
   it('endAge < currentAge のとき空配列を返す', () => {
-    const result = runSimulation(
-      baseInput({ basic: { currentAge: 70, endAge: 60, savings: 0, investments: 0 } }),
-    );
+    const result = runSimulation(baseInput({ basic: { currentAge: 70, endAge: 60, savings: 0 } }));
     expect(result).toHaveLength(0);
   });
 
@@ -106,7 +105,7 @@ describe('runSimulation', () => {
   it('資産がマイナスになる年を検出できる(高支出シナリオ)', () => {
     const result = runSimulation(
       baseInput({
-        basic: { currentAge: 30, endAge: 50, savings: 100, investments: 0 },
+        basic: { currentAge: 30, endAge: 50, savings: 100 },
         income: {
           workPeriods: [workPeriod({ income: 300, raiseRate: 0 })],
           retirementBonus: 0,
@@ -220,7 +219,7 @@ describe('runSimulation', () => {
   it('退職後は給与が0になり、年金へ切り替わる', () => {
     const result = runSimulation(
       baseInput({
-        basic: { currentAge: 60, endAge: 75, savings: 1000, investments: 0 },
+        basic: { currentAge: 60, endAge: 75, savings: 1000 },
         income: {
           workPeriods: [workPeriod({ startAge: 60, endAge: 64, income: 600 })],
           retirementBonus: 2000,
@@ -445,6 +444,7 @@ describe('runSimulation', () => {
             {
               name: 'NISA',
               accountType: 'nisa',
+              initialHolding: 0,
               monthlyAmount: 5,
               annualReturn: 5.0,
               startAge: 30,
@@ -465,11 +465,34 @@ describe('runSimulation', () => {
     expect(result[10]!.investmentValue).toBeGreaterThan(result[0]!.investmentValue);
   });
 
+  it('投資枠の現在投資額(初期保有額)が初年度から評価額に乗る', () => {
+    const result = runSimulation(
+      baseInput({
+        investment: {
+          accounts: [
+            {
+              name: '特定口座',
+              accountType: 'taxable',
+              initialHolding: 500,
+              monthlyAmount: 0,
+              annualReturn: 5.0,
+              startAge: 30,
+              endAge: 65,
+            },
+          ],
+        },
+      }),
+    );
+    // 初年度は初期保有 500 に利回り 5% が乗る(= 525)。
+    expect(result[0]!.investmentValue).toBeCloseTo(525, 6);
+    expect(result[0]!.income.investmentGain).toBeCloseTo(25, 6);
+  });
+
   it('NISA上限を超える積立は投資されず預金に残り、上限到達年に注記される', () => {
     // 月40万(480万/年)を高収入で積立 → 年間上限360万を毎年超過し、いずれ生涯枠1800万に到達。
     const result = runSimulation(
       baseInput({
-        basic: { currentAge: 30, endAge: 90, savings: 0, investments: 0 },
+        basic: { currentAge: 30, endAge: 90, savings: 0 },
         income: {
           workPeriods: [workPeriod({ startAge: 30, endAge: 64, income: 3000, raiseRate: 0 })],
           retirementBonus: 0,
@@ -482,6 +505,7 @@ describe('runSimulation', () => {
             {
               name: 'NISA',
               accountType: 'nisa',
+              initialHolding: 0,
               monthlyAmount: 40,
               annualReturn: 0,
               startAge: 30,
@@ -692,7 +716,7 @@ describe('runSimulation', () => {
 
   it('通常入力(約72年分)を高速に計算できる', () => {
     const input = baseInput({
-      basic: { currentAge: 18, endAge: 90, savings: 300, investments: 100 },
+      basic: { currentAge: 18, endAge: 90, savings: 300 },
     });
     const t0 = Date.now();
     const result = runSimulation(input);

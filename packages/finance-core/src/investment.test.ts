@@ -8,6 +8,7 @@ import type { InvestmentAccount, InvestmentInput } from './types';
 const makeAccount = (overrides: Partial<InvestmentAccount> = {}): InvestmentAccount => ({
   name: 'test',
   accountType: 'nisa',
+  initialHolding: 0,
   monthlyAmount: 0,
   annualReturn: 0,
   startAge: 30,
@@ -21,25 +22,38 @@ const oneAccount = (overrides: Partial<InvestmentAccount> = {}): InvestmentInput
 });
 
 describe('initInvestmentState', () => {
-  it('起点の投資資産額を先頭枠の評価額・簿価に組み入れる', () => {
-    const state = initInvestmentState(300, [
-      makeAccount(),
-      makeAccount({ accountType: 'taxable' }),
+  it('各枠の初期保有額を評価額・簿価に組み入れる', () => {
+    const state = initInvestmentState([
+      makeAccount({ accountType: 'taxable', initialHolding: 300 }),
+      makeAccount({ accountType: 'taxable', initialHolding: 50 }),
     ]);
     expect(state.accounts[0]).toEqual({ value: 300, costBasis: 300 });
-    expect(state.accounts[1]).toEqual({ value: 0, costBasis: 0 });
-    // 初期投資資産は NISA 生涯枠の消費対象に含めない。
+    expect(state.accounts[1]).toEqual({ value: 50, costBasis: 50 });
+    // 課税枠の初期保有額は NISA 生涯枠を消費しない。
     expect(state.nisaLifetimeCostBasis).toBe(0);
   });
 
+  it('NISA 枠の初期保有額は生涯枠(簿価累計)を消費する', () => {
+    const state = initInvestmentState([
+      makeAccount({ accountType: 'nisa', initialHolding: 400 }),
+      makeAccount({ accountType: 'nisa', initialHolding: 200 }),
+      makeAccount({ accountType: 'taxable', initialHolding: 500 }),
+    ]);
+    expect(state.accounts[0]).toEqual({ value: 400, costBasis: 400 });
+    expect(state.accounts[1]).toEqual({ value: 200, costBasis: 200 });
+    expect(state.accounts[2]).toEqual({ value: 500, costBasis: 500 });
+    // NISA 枠の初期保有額合計(400 + 200 = 600)だけ生涯枠を消費する(課税枠は対象外)。
+    expect(state.nisaLifetimeCostBasis).toBe(600);
+  });
+
   it('枠が無い場合は空stateを返す', () => {
-    expect(initInvestmentState(300, [])).toEqual({ accounts: [], nisaLifetimeCostBasis: 0 });
+    expect(initInvestmentState([])).toEqual({ accounts: [], nisaLifetimeCostBasis: 0 });
   });
 });
 
 describe('stepInvestment - 積立のみ', () => {
   it('積立 + 運用益を評価額に反映し、簿価は積立分だけ増える', () => {
-    const prev = initInvestmentState(0, [makeAccount()]);
+    const prev = initInvestmentState([makeAccount()]);
     const investment = oneAccount({ monthlyAmount: 3, annualReturn: 3.0, accountType: 'nisa' });
 
     const result = stepInvestment(prev, { age: 30, investment });
@@ -314,6 +328,25 @@ describe('stepInvestment - NISA生涯上限(1800万)', () => {
     expect(next.state.nisaLifetimeCostBasis).toBe(NISA_LIFETIME_LIMIT);
   });
 
+  it('NISA 枠の初期保有額が生涯枠を先に消費し、残りだけ積み立てられる', () => {
+    // 初期保有 1790 万の NISA 枠。生涯枠の残りは 10 万しかない。
+    const investment = oneAccount({
+      accountType: 'nisa',
+      initialHolding: 1790,
+      monthlyAmount: 10, // 希望 120 万/年
+      annualReturn: 0,
+    });
+    const prev = initInvestmentState(investment.accounts);
+    expect(prev.nisaLifetimeCostBasis).toBe(1790);
+
+    const result = stepInvestment(prev, { age: 40, investment });
+
+    // 生涯枠の残り 10 万しか積み立てられない。
+    expect(result.contribution).toBe(10);
+    expect(result.uninvested).toBe(110);
+    expect(result.state.nisaLifetimeCostBasis).toBe(NISA_LIFETIME_LIMIT); // 1800
+  });
+
   it('取り崩しても生涯枠は復活しない(簿価累計は減らない)', () => {
     const prev: InvestmentState = {
       accounts: [{ value: 1800, costBasis: 1800 }],
@@ -340,7 +373,7 @@ describe('stepInvestment - T5 年次ループでの連鎖', () => {
   it('前年stateを次年の入力として複数年チェーンできる', () => {
     const investment = oneAccount({ monthlyAmount: 10, annualReturn: 3.0, accountType: 'nisa' });
 
-    let state = initInvestmentState(0, investment.accounts);
+    let state = initInvestmentState(investment.accounts);
     for (let age = 30; age < 33; age++) {
       state = stepInvestment(state, { age, investment }).state;
     }

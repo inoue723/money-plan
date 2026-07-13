@@ -32,12 +32,14 @@
  *   - 年間投資枠: NISA_ANNUAL_LIMIT(360 万、全 NISA 枠合算・その年の投資額)
  * 取り崩し(売却)による生涯枠の復活は本 issue の対象外のため、生涯簿価累計は減少させない。
  *
- * ## 初期投資資産(BasicInput.investments)の扱い
- * 初期投資資産は先頭の投資枠(accounts[0])の初期評価額・簿価に組み入れる(その枠の利回り・
- * 取り崩し設定で運用される)。ただし初期保有分の簿価は NISA 生涯枠・年間枠の消費対象には
- * **含めない**(既存保有分の非課税/課税内訳が入力に無く不明なため、保守的に上限判定の対象外
- * とし、上限は本シミュレーション期間中の新規積立のみで消費する)。枠が 1 つも無い場合、初期
- * 投資資産は運用対象を持たないため投資評価額には反映されない。
+ * ## 初期保有額(InvestmentAccount.initialHolding)の扱い
+ * 各投資枠は起点時点の初期保有額(現在投資額)を持ち、その枠の初期評価額・簿価に組み入れる
+ * (その枠の利回り・取り崩し設定で運用される)。含み益が不明なため全額を簿価として扱う。
+ * NISA 枠の初期保有額は簿価とみなし、NISA 生涯投資枠(1800 万)の消費対象に**含める**
+ * (#46 での変更点。従来は上限判定の対象外だった)。年間投資枠(360 万)は「その年の新規
+ * 積立額」に対する制約のため、起点で保有済みの初期保有額は年間枠を消費しない。
+ * ※ 初期保有額の生涯枠消費は口座種別のみで分岐する素直な構造とし、後続 #52(配偶者 NISA 枠を
+ *   名義別に管理)で名義ごとの生涯枠へ拡張できるようにしておく。
  */
 
 import { CAPITAL_GAINS_TAX_RATE, NISA_ANNUAL_LIMIT, NISA_LIFETIME_LIMIT } from './constants';
@@ -116,19 +118,31 @@ interface AccountStepResult {
 const emptyAccountState = (): AccountState => ({ value: 0, costBasis: 0 });
 
 /**
- * 初期投資stateを生成する。
- * 起点時点の投資資産額(BasicInput.investments)は、含み益が不明なため全額を簿価として扱い、
- * 先頭の投資枠に組み入れる(モジュール冒頭の方針を参照)。枠が無ければ運用に反映されない。
+ * 起点時点で NISA 生涯枠が初期保有額により既に消費されている額(全 NISA 枠合算・簿価ベース)。
+ * NISA 枠の初期保有額は簿価とみなし、生涯枠(1800 万)の消費対象に含める(#46)。
+ * 口座種別のみで分岐する素直な構造とし、後続 #52 で名義別の生涯枠へ拡張しやすくしておく。
  */
-export const initInvestmentState = (
-  investments: number,
-  accounts: InvestmentAccount[],
-): InvestmentState => {
-  const accountStates: AccountState[] = accounts.map(() => emptyAccountState());
-  if (accountStates.length > 0) {
-    accountStates[0] = { value: investments, costBasis: investments };
-  }
-  return { accounts: accountStates, nisaLifetimeCostBasis: 0 };
+export const nisaInitialLifetimeUsage = (accounts: InvestmentAccount[]): number =>
+  accounts.reduce(
+    (sum, a) => (a.accountType === 'nisa' ? sum + Math.max(0, a.initialHolding) : sum),
+    0,
+  );
+
+/**
+ * 初期投資stateを生成する。
+ * 各投資枠の初期保有額(InvestmentAccount.initialHolding)を、含み益が不明なため全額を簿価
+ * として扱い、その枠の初期評価額・簿価に組み入れる(モジュール冒頭の方針を参照)。
+ * NISA 枠の初期保有額は簿価として生涯枠を消費するため、生涯簿価累計の初期値に加算する。
+ */
+export const initInvestmentState = (accounts: InvestmentAccount[]): InvestmentState => {
+  const accountStates: AccountState[] = accounts.map((a) => {
+    const holding = Math.max(0, a.initialHolding);
+    return { value: holding, costBasis: holding };
+  });
+  return {
+    accounts: accountStates,
+    nisaLifetimeCostBasis: nisaInitialLifetimeUsage(accounts),
+  };
 };
 
 /**

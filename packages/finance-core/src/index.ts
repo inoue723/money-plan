@@ -14,5 +14,8 @@ export * from './constants';
 // シミュレーション本体(公開API。Web 側の唯一の計算入口)。
 export { runSimulation } from './simulation';
 
+// 投資枠のバリデーション補助(NISA 枠の初期保有額合計を求める。UI の上限警告に使う)。
+export { nisaInitialLifetimeUsage } from './investment';
+
 /** workspace 依存の疎通確認用ダミー関数。 */
 export const ping = (): string => 'pong';

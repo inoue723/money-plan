@@ -125,8 +125,6 @@ export interface BasicInput {
   endAge: number;
   /** 現在の預金残高(万円)。 */
   savings: number;
-  /** 現在の投資資産額(万円)。デフォルト 0。 */
-  investments: number;
 }
 
 /** F-01 家族構成。 */
@@ -257,6 +255,12 @@ export interface InvestmentAccount {
   name: string;
   /** 口座種別。'nisa' は非課税(上限あり)、'taxable' は取崩時に運用益へ課税。 */
   accountType: AccountType;
+  /**
+   * 現在投資額(初期保有額・万円)。この枠がシミュレーション起点で既に保有している評価額。
+   * デフォルト 0。含み益が不明なため全額を簿価(取得原価)とみなす簡易化を行う。
+   * NISA 枠の初期保有額は NISA 生涯投資枠(1800 万)を消費する扱いとする。
+   */
+  initialHolding: number;
   /** 毎月の積立額(万円)。デフォルト 0。 */
   monthlyAmount: number;
   /** 想定利回り(年率 %、0〜15)。デフォルト 3.0。 */

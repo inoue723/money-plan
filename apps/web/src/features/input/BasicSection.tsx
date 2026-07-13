@@ -1,7 +1,7 @@
 /**
  * F-01 基本情報セクション(#9)。
  *
- * 現在年齢 / 終了年齢 / 預金 / 投資資産 / 配偶者有無(有→年齢・収入) /
+ * 現在年齢 / 終了年齢 / 預金 / 配偶者有無(有→年齢・収入) /
  * 子ども人数と年齢・進路 / 居住地域 を入力する。値は #8 の setter 経由でストアへ反映する。
  *
  * 子どもは「既に生まれている子ども(現在の年齢を入力)」に加えて、
@@ -112,13 +112,6 @@ export function BasicSection() {
           min={0}
           unit="万円"
           required
-        />
-        <NumberField
-          label="投資資産額"
-          value={basic.investments}
-          onChange={(v) => setBasic({ investments: v })}
-          min={0}
-          unit="万円"
         />
       </div>
 
