@@ -5,7 +5,7 @@
  * (横=年次・縦=内訳)に置き換えた。この表の各行(内訳項目)と、収入/控除/支出/収支・資産の
  * セクション構成をここで一元定義する。金額はすべて「万円」。
  *
- * 数値フォーマッタ(formatMan / truncMan)は本ファイルで定義し、CF表・年次詳細・
+ * 数値フォーマッタ(formatMan / truncMan)は本ファイルで定義し、CF表・
  * グラフ(chartKit 経由)で共有して表示・丸めを統一する。
  */
 import type { YearlyResult } from '@money-plan/finance-core';
@@ -36,8 +36,12 @@ export function totalExpense(r: YearlyResult): number {
 export interface CashflowRow {
   /** 先頭列に表示する項目名。 */
   label: string;
-  /** 年次結果から表示値を取り出す。 */
-  get: (r: YearlyResult) => number | string;
+  /**
+   * 年次結果から表示値を取り出す。
+   * 前年比のように前年参照が要る行のため、対象年 `r` に加えて列インデックス `index` と
+   * 全年配列 `all` も受け取れる(既存の単年参照行はそのまま `(r) => …` で書ける)。
+   */
+  get: (r: YearlyResult, index: number, all: YearlyResult[]) => number | string;
   /** 文字列行(イベント名など)。数値整形・負値の赤字を適用しない。 */
   text?: boolean;
   /** 小計・合計行として強調表示する。 */
@@ -108,8 +112,15 @@ export function buildCashflowSections(result: YearlyResult[]): CashflowSection[]
       rows: [
         { label: '年間収支', get: (r) => r.balance },
         { label: '預金残高', get: (r) => r.savings },
+        { label: '年間積立額', get: (r) => r.investmentContribution },
         { label: '投資資産', get: (r) => r.investmentValue },
         { label: '総資産', get: (r) => r.totalAssets, emphasize: true },
+        {
+          // 総資産の前年差分。初年は比較対象がないため「—」(文字列)を返す。
+          label: '総資産 前年比',
+          get: (r, index, all) =>
+            index === 0 ? '—' : r.totalAssets - (all[index - 1]?.totalAssets ?? 0),
+        },
         { label: 'イベント', get: (r) => r.events.join(' / '), text: true },
       ],
     },

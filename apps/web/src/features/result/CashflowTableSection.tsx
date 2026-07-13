@@ -5,7 +5,8 @@
  * (横=年次・縦=内訳)に置き換えたもの。
  *
  * - 先頭の項目名列(左)と年次ヘッダー(西暦・年齢, 上)を sticky 固定し、横・縦スクロールに追従させる。
- * - 年(西暦)ヘッダーのクリックで `setSelectedYear` を呼び、YearDetailSection と連動する。
+ * - 年(西暦)ヘッダーのクリックで `setSelectedYear` を呼び、その列をハイライトする(グラフの
+ *   選択年マーカーとも `selectedYear` 経由で連動する)。
  * - 負の値は `text-rose-600` の赤字で表示する。金額は `formatMan`(万円未満切り捨て・桁区切り)で整形。
  */
 import type { ReactNode } from 'react';
@@ -40,7 +41,7 @@ export function CashflowTableSection() {
             <caption className="sr-only">
               全期間({result[0]?.year}年〜{result[result.length - 1]?.year}
               年)のキャッシュフロー表。列が年次、行が収入・控除・支出・収支/資産の内訳。金額の単位は万円。
-              西暦ヘッダーをクリックすると該当年の詳細内訳を表示します。
+              西暦ヘッダーをクリックすると該当年の列をハイライトします。
             </caption>
             <thead>
               {/* 西暦(上段・sticky top-0)。列ヘッダーをクリックで選択年を切り替える。 */}
@@ -114,8 +115,8 @@ export function CashflowTableSection() {
                       >
                         {row.label}
                       </th>
-                      {result.map((r) => {
-                        const value = row.get(r);
+                      {result.map((r, colIdx) => {
+                        const value = row.get(r, colIdx, result);
                         const isSelected = r.year === selectedYear;
                         const negative = !row.text && typeof value === 'number' && value < 0;
                         return (
@@ -153,7 +154,7 @@ export function CashflowTableSection() {
       )}
 
       <p className="mt-2 text-xs text-slate-400">
-        金額の単位は万円(万円未満切り捨て)。西暦ヘッダーをクリックすると、その年の詳細内訳が上部に表示されます。
+        金額の単位は万円(万円未満切り捨て)。西暦ヘッダーをクリックすると、その年の列がハイライトされます。
       </p>
     </section>
   );
