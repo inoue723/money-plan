@@ -373,6 +373,13 @@ export interface YearlyResult {
   year: number;
   /** 本人年齢(歳)。 */
   age: number;
+  /** 配偶者の年齢(歳)。配偶者がいない場合は undefined。 */
+  spouseAge?: number;
+  /**
+   * 各子どもの当年の年齢(歳)。入力の `family.children` と同順・同数。
+   * まだ生まれていない年は負値になる(表示側で「—」扱い)。
+   */
+  childAges: number[];
   /** 収入内訳。 */
   income: IncomeBreakdown;
   /** 控除内訳(所得税・住民税・社会保険料)。 */
