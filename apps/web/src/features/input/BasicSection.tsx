@@ -10,7 +10,7 @@
  */
 import { useState } from 'react';
 import type { Child } from '@money-plan/finance-core';
-import { useSimulationStore } from '../../stores/simulationStore';
+import { createDefaultSpouse, useSimulationStore } from '../../stores/simulationStore';
 import { NumberField } from '../../components/NumberField';
 import { SelectField } from '../../components/SelectField';
 import { ToggleField } from '../../components/ToggleField';
@@ -123,13 +123,13 @@ export function BasicSection() {
         hint="v1では住民税を一律計算(地域差は将来対応)"
       />
 
-      {/* 配偶者 */}
+      {/* 配偶者(有無・年齢のみ。収入は「収入」セクションで本人と同じUIで入力する。#49) */}
       <div className="rounded-md bg-slate-50 p-2">
         <ToggleField
           label="配偶者あり"
           checked={hasSpouse}
           onChange={(checked) =>
-            setFamily({ spouse: checked ? { age: basic.currentAge, income: 0 } : undefined })
+            setFamily({ spouse: checked ? createDefaultSpouse(basic.currentAge) : undefined })
           }
         />
         {family.spouse && (
@@ -142,14 +142,12 @@ export function BasicSection() {
               max={100}
               unit="歳"
             />
-            <NumberField
-              label="配偶者の年収"
-              value={family.spouse.income}
-              onChange={(v) => setFamily({ spouse: { ...family.spouse!, income: v } })}
-              min={0}
-              unit="万円"
-            />
           </div>
+        )}
+        {family.spouse && (
+          <p className="mt-2 text-[11px] text-slate-400">
+            配偶者の収入は「収入」セクションで入力します。
+          </p>
         )}
       </div>
 

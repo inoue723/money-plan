@@ -28,7 +28,8 @@
  *   (v1: `{ input, plans }` → v2: `{ input, tabs, activeTabId }`、
  *    v2 → v3: `basic.investments` を廃止し投資枠ごとの `initialHolding` へ移行し、
  *    名前が「家賃」の ExpenseItem を家賃専用型 `expense.rent` へ変換、
- *    v3 → v4: 投資枠に名義 `owner` を追加し、既存枠はすべて `'self'`(本人)とする(#52))。
+ *    v3 → v4: `spouse.income`(固定年収)を本人と同等の `IncomeInput` 構造へ変換(#49)し、
+ *    投資枠に名義 `owner` を追加して既存枠はすべて `'self'`(本人)とする(#52))。
  */
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
@@ -44,6 +45,7 @@ import type {
   RentInput,
   SimulationInput,
   SimulationResult,
+  Spouse,
 } from '@money-plan/finance-core';
 
 // ---------------------------------------------------------------------------
@@ -120,6 +122,27 @@ export const DEFAULT_INPUT: SimulationInput = {
     ],
   },
 };
+
+// ---------------------------------------------------------------------------
+// 配偶者の収入(#49)
+// ---------------------------------------------------------------------------
+
+/**
+ * 空の収入情報(働き方期間なし = 無収入)。配偶者を新規に有効化したときの初期値に使う。
+ * 本人の収入と同じ `IncomeInput` 構造で、ユーザーが働き方期間を追加するまで収入は 0。
+ */
+export const createEmptyIncome = (): IncomeInput => ({
+  workPeriods: [],
+  retirementBonus: 0,
+  pension: 0,
+  other: 0,
+});
+
+/** 配偶者を新規に有効化するときの既定値(年齢のみ指定、収入は空)。 */
+export const createDefaultSpouse = (age: number): Spouse => ({
+  age,
+  income: createEmptyIncome(),
+});
 
 // ---------------------------------------------------------------------------
 // ストア定義
@@ -208,6 +231,29 @@ const migrateInputV2toV3 = (input: SimulationInput): SimulationInput =>
   migrateExpenseRent(migrateInvestmentsToHolding(input));
 
 /**
+ * v3 → v4 マイグレーション(#49)。旧 `spouse.income`(固定年収 number)を本人と同等の
+ * `IncomeInput` 構造へ変換する。年収 > 0 なら「現在年齢〜退職年齢(65)の会社員期間1つ」に、
+ * 年収 0(または未満)なら働き方期間なし(無収入)に変換する。昇給率は旧挙動(固定額)に
+ * 合わせ 0% とする。既に `IncomeInput` 形式(オブジェクト)なら変換しない。
+ */
+const migrateSpouseIncome = (input: SimulationInput): SimulationInput => {
+  const spouse = input.family.spouse as (Spouse & { income: number | IncomeInput }) | undefined;
+  if (!spouse || typeof spouse.income !== 'number') return input;
+
+  const annual = spouse.income;
+  const startAge = spouse.age;
+  const endAge = Math.max(startAge, 65);
+  const income: IncomeInput = {
+    workPeriods:
+      annual > 0 ? [{ startAge, endAge, workStyle: 'employee', income: annual, raiseRate: 0 }] : [],
+    retirementBonus: 0,
+    pension: 0,
+    other: 0,
+  };
+  return { ...input, family: { ...input.family, spouse: { age: spouse.age, income } } };
+};
+
+/**
  * v3 → v4 の入力マイグレーション(#52)。投資枠に名義(owner)を追加する。
  * 既存枠はすべて本人名義(`'self'`)とする。既に owner を持つ枠はそのまま維持する。
  */
@@ -221,6 +267,10 @@ const migrateAddOwner = (input: SimulationInput): SimulationInput => ({
     }),
   },
 });
+
+/** v3 → v4 の入力マイグレーションを両方(#49 / #52)適用する。両者は別フィールドを扱うため共存できる。 */
+const migrateInputV3toV4 = (input: SimulationInput): SimulationInput =>
+  migrateAddOwner(migrateSpouseIncome(input));
 
 /** タブの一意 ID を採番する。 */
 const createPlanId = (): string =>
@@ -475,14 +525,15 @@ export const useSimulationStore = create<SimulationState>()(
         }
 
         if (version < 4) {
-          // v3 → v4: 投資枠に名義(owner)を追加する(#52)。既存枠はすべて 'self'。
+          // v3 → v4: 配偶者の固定年収 → IncomeInput 変換(#49)と投資枠への名義 owner 付与(#52)を
+          // まとめて適用する。両者は別フィールドを扱うため共存できる。
           data = {
             ...data,
-            input: migrateAddOwner(data.input),
+            input: migrateInputV3toV4(data.input),
             tabs: data.tabs.map((t) => ({
               ...t,
-              savedInput: migrateAddOwner(t.savedInput),
-              draftInput: migrateAddOwner(t.draftInput),
+              savedInput: migrateInputV3toV4(t.savedInput),
+              draftInput: migrateInputV3toV4(t.draftInput),
             })),
           };
         }

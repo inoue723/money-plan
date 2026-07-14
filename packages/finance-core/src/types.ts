@@ -109,12 +109,18 @@ export type LifeEvent =
 // 入力(SPEC.md 4.4 SimulationInput / 2.2)
 // ---------------------------------------------------------------------------
 
-/** 配偶者情報。 */
+/**
+ * 配偶者情報(#49)。
+ *
+ * 収入は本人(`IncomeInput`)と完全に同等の構造で持ち、税・社会保険料は本人と同じ
+ * 計算ロジックを「配偶者の年齢」を基準に適用する。`age` は起点年齢で、シミュレーション
+ * 各年では `age + 経過年数` を配偶者年齢として扱う。
+ */
 export interface Spouse {
-  /** 年齢(歳)。 */
+  /** 年齢(歳)。シミュレーション起点での配偶者年齢。 */
   age: number;
-  /** 年収(額面・万円)。 */
-  income: number;
+  /** 収入情報(本人と同等: 働き方期間・退職金・年金・その他収入)。 */
+  income: IncomeInput;
 }
 
 /** F-01 基本情報。 */
@@ -385,6 +391,13 @@ export interface YearlyResult {
   year: number;
   /** 本人年齢(歳)。 */
   age: number;
+  /** 配偶者の年齢(歳)。配偶者がいない場合は undefined。 */
+  spouseAge?: number;
+  /**
+   * 各子どもの当年の年齢(歳)。入力の `family.children` と同順・同数。
+   * まだ生まれていない年は負値になる(表示側で「—」扱い)。
+   */
+  childAges: number[];
   /** 収入内訳。 */
   income: IncomeBreakdown;
   /** 控除内訳(所得税・住民税・社会保険料)。 */

@@ -11,7 +11,7 @@
  */
 import type { ReactNode } from 'react';
 import { useSimulationResult, useSimulationStore } from '../../stores/simulationStore';
-import { buildCashflowSections, formatMan } from './yearColumns';
+import { buildAgeHeaderRows, buildCashflowSections, formatMan } from './yearColumns';
 
 export function CashflowTableSection() {
   const result = useSimulationResult();
@@ -23,6 +23,8 @@ export function CashflowTableSection() {
   const totalCols = result.length + 1;
   // 支出項目(#31)を含むため、行構成は結果から動的に組み立てる。
   const sections = buildCashflowSections(result);
+  // 年次ヘッダ付近に表示する配偶者・子どもの年齢行(#48)。配偶者なし・子0人なら空。
+  const ageHeaderRows = buildAgeHeaderRows(result);
 
   return (
     <section className="rounded-lg border border-slate-200 bg-white p-4">
@@ -97,6 +99,36 @@ export function CashflowTableSection() {
                   );
                 })}
               </tr>
+              {/* 配偶者・子どもの年齢(#48)。西暦(h-9)+年齢(h-8)の下に順に sticky 固定する。 */}
+              {ageHeaderRows.map((ageRow, k) => {
+                // 上端からの sticky オフセット(px): 西暦 36 + 年齢 32 + それより上の年齢行 × 32。
+                const top = 68 + k * 32;
+                return (
+                  <tr key={ageRow.label}>
+                    <th
+                      scope="row"
+                      style={{ top }}
+                      className="sticky left-0 z-30 h-8 min-w-[8rem] border-b border-r border-slate-200 bg-slate-50 px-3 text-left font-normal text-slate-500"
+                    >
+                      {ageRow.label}
+                    </th>
+                    {result.map((r) => {
+                      const isSelected = r.year === selectedYear;
+                      return (
+                        <td
+                          key={r.year}
+                          style={{ top }}
+                          className={`sticky z-20 h-8 border-b border-slate-200 px-3 text-right tabular-nums ${
+                            isSelected ? 'bg-sky-50 text-sky-800' : 'bg-slate-50 text-slate-500'
+                          }`}
+                        >
+                          {ageRow.get(r)}
+                        </td>
+                      );
+                    })}
+                  </tr>
+                );
+              })}
             </thead>
             <tbody>
               {sections.map((section) => (
