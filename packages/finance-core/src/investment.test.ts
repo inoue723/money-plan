@@ -63,6 +63,51 @@ describe('initInvestmentState', () => {
       nisaLifetimeCostBasis: { self: 0, spouse: 0 },
     });
   });
+
+  describe('取得価額(簿価)を持つ初期保有(#59)', () => {
+    it('取得価額 < 時価 のとき、評価額は時価・簿価は取得価額になる', () => {
+      const state = initInvestmentState([
+        makeAccount({ accountType: 'taxable', initialHolding: 500, acquisitionCost: 400 }),
+      ]);
+      // value(評価額)は時価、costBasis(簿価)は取得価額。
+      expect(state.accounts[0]).toEqual({ value: 500, costBasis: 400 });
+    });
+
+    it('NISA 枠の生涯枠消費は時価ではなく簿価(取得価額)ぶんになる', () => {
+      const state = initInvestmentState([
+        makeAccount({ accountType: 'nisa', initialHolding: 500, acquisitionCost: 400 }),
+      ]);
+      // 時価 500 ではなく簿価 400 だけ生涯枠を消費する(含み益 100 は枠を消費しない)。
+      expect(state.accounts[0]).toEqual({ value: 500, costBasis: 400 });
+      expect(state.nisaLifetimeCostBasis).toEqual({ self: 400, spouse: 0 });
+    });
+
+    it('名義ごとに簿価ベースで生涯枠消費を独立集計する', () => {
+      const state = initInvestmentState([
+        makeAccount({ accountType: 'nisa', owner: 'self', initialHolding: 500, acquisitionCost: 400 }),
+        makeAccount({
+          accountType: 'nisa',
+          owner: 'spouse',
+          initialHolding: 900,
+          acquisitionCost: 700,
+        }),
+      ]);
+      expect(state.nisaLifetimeCostBasis).toEqual({ self: 400, spouse: 700 });
+    });
+
+    it('acquisitionCost 未指定なら時価を簿価とみなす(#46/#52 と後方互換)', () => {
+      const withUndefined = initInvestmentState([
+        makeAccount({ accountType: 'nisa', initialHolding: 400 }),
+      ]);
+      const withExplicit = initInvestmentState([
+        makeAccount({ accountType: 'nisa', initialHolding: 400, acquisitionCost: 400 }),
+      ]);
+      // 取得価額を省略した場合と時価と同額を明示した場合で完全に一致する。
+      expect(withUndefined).toEqual(withExplicit);
+      expect(withUndefined.accounts[0]).toEqual({ value: 400, costBasis: 400 });
+      expect(withUndefined.nisaLifetimeCostBasis).toEqual({ self: 400, spouse: 0 });
+    });
+  });
 });
 
 describe('stepInvestment - 積立のみ', () => {
@@ -380,6 +425,84 @@ describe('stepInvestment - NISA生涯上限(1800万)', () => {
     expect(result.state.nisaLifetimeCostBasis.self).toBe(NISA_LIFETIME_LIMIT);
     expect(result.contribution).toBe(0);
     expect(result.uninvested).toBe(120);
+  });
+});
+
+describe('取得価額(簿価)を持つ初期保有の運用(#59)', () => {
+  it('取得価額 < 時価 の NISA 枠で、生涯枠消費が簿価ぶんだけになる', () => {
+    // 初期保有: 時価 1700 万 / 取得価額(簿価)1750 万… ではなく含み益ケース。
+    // 時価 1700・簿価 1600 → 生涯枠は 1600 だけ消費し、残枠 200 万を新規積立できる。
+    const investment = oneAccount({
+      accountType: 'nisa',
+      initialHolding: 1700,
+      acquisitionCost: 1600,
+      monthlyAmount: 30, // 希望 360 万/年
+      annualReturn: 0,
+    });
+    const prev = initInvestmentState(investment.accounts);
+    // 簿価 1600 だけ生涯枠を消費(時価 1700 ではない)。
+    expect(prev.nisaLifetimeCostBasis.self).toBe(1600);
+
+    const result = stepInvestment(prev, { age: 40, investment });
+
+    // 生涯枠の残りは 1800 − 1600 = 200 万。希望 360 万のうち 200 万だけ積み立てられる。
+    expect(result.contribution).toBe(200);
+    expect(result.uninvested).toBe(160);
+    expect(result.state.nisaLifetimeCostBasis.self).toBe(NISA_LIFETIME_LIMIT); // 1800
+  });
+
+  it('時価をそのまま消費していたら残枠が過小になる(簿価ベースの効果を確認)', () => {
+    // 対比: 取得価額を指定しない(=時価 1700 を簿価とみなす)と残枠は 100 万しかない。
+    const investment = oneAccount({
+      accountType: 'nisa',
+      initialHolding: 1700,
+      monthlyAmount: 30,
+      annualReturn: 0,
+    });
+    const prev = initInvestmentState(investment.accounts);
+    expect(prev.nisaLifetimeCostBasis.self).toBe(1700);
+
+    const result = stepInvestment(prev, { age: 40, investment });
+    // 残枠 1800 − 1700 = 100 万しか積み立てられない(簿価指定時の 200 万より少ない)。
+    expect(result.contribution).toBe(100);
+  });
+
+  it('taxable 枠で取得価額 < 時価 のとき、取崩時に初期保有の評価益へ課税される', () => {
+    // 初期保有: 時価 1000 万・取得価額(簿価)600 万 → 含み益 400 万。
+    const investment = oneAccount({
+      accountType: 'taxable',
+      initialHolding: 1000,
+      acquisitionCost: 600,
+      annualReturn: 0,
+      withdrawal: { startAge: 65, annualAmount: 100 },
+    });
+    const prev = initInvestmentState(investment.accounts);
+    expect(prev.accounts[0]).toEqual({ value: 1000, costBasis: 600 });
+
+    const result = stepInvestment(prev, { age: 70, investment });
+
+    expect(result.withdrawal).toBe(100);
+    // 評価益割合 = (1000 − 600) / 1000 = 0.4、課税対象益 = 100 × 0.4 = 40。
+    expect(result.tax).toBeCloseTo(40 * CAPITAL_GAINS_TAX_RATE, 10);
+    // 取崩後: 評価額 900、簿価 600 × (1 − 100/1000) = 540。
+    expect(result.investmentValue).toBeCloseTo(900, 10);
+    expect(result.state.accounts[0]!.costBasis).toBeCloseTo(540, 10);
+  });
+
+  it('acquisitionCost 未指定なら初期保有に含み益なし=取崩時課税ゼロ(後方互換)', () => {
+    // 取得価額を省略すると時価=簿価(含み益 0)。取崩しても課税されない。
+    const investment = oneAccount({
+      accountType: 'taxable',
+      initialHolding: 1000,
+      annualReturn: 0,
+      withdrawal: { startAge: 65, annualAmount: 100 },
+    });
+    const prev = initInvestmentState(investment.accounts);
+    expect(prev.accounts[0]).toEqual({ value: 1000, costBasis: 1000 });
+
+    const result = stepInvestment(prev, { age: 70, investment });
+    expect(result.withdrawal).toBe(100);
+    expect(result.tax).toBe(0);
   });
 });
 

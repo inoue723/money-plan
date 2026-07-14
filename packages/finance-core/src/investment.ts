@@ -34,12 +34,15 @@
  * その名義の枠内で合算し、リストの順に残余を消費する。
  * 取り崩し(売却)による生涯枠の復活は本 issue の対象外のため、生涯簿価累計は減少させない。
  *
- * ## 初期保有額(InvestmentAccount.initialHolding)の扱い
- * 各投資枠は起点時点の初期保有額(現在投資額)を持ち、その枠の初期評価額・簿価に組み入れる
- * (その枠の利回り・取り崩し設定で運用される)。含み益が不明なため全額を簿価として扱う。
- * NISA 枠の初期保有額は簿価とみなし、NISA 生涯投資枠(1800 万)の消費対象に**含める**
- * (#46 での変更点。従来は上限判定の対象外だった)。年間投資枠(360 万)は「その年の新規
- * 積立額」に対する制約のため、起点で保有済みの初期保有額は年間枠を消費しない。
+ * ## 初期保有額(InvestmentAccount.initialHolding)と取得価額(acquisitionCost)の扱い
+ * 各投資枠は起点時点の初期保有額(現在投資額 = 時価)を持ち、その枠の初期評価額に組み入れる
+ * (その枠の利回り・取り崩し設定で運用される)。簿価(取得原価)は取得価額 `acquisitionCost`
+ * とし、未指定なら時価(initialHolding)と同値とみなす(含み益 0 の簡易化。#46/#52 と後方互換)。
+ * 取得価額 < 時価 のとき初期保有に含み益があり、以下のように反映する(#59):
+ *   - NISA 枠の初期保有は**簿価(取得価額)ぶんだけ** NISA 生涯投資枠(1800 万)を消費する
+ *     (含み益は枠を消費しない)。年間投資枠(360 万)は「その年の新規積立額」への制約のため、
+ *     起点保有分は年間枠を消費しない。
+ *   - 課税枠は簿価を初期簿価に据えることで、取崩時の譲渡益課税が初期保有の含み益に正しく及ぶ。
  * 生涯枠の消費は名義(owner)ごとに独立して判定する(#52)。
  */
 
@@ -60,6 +63,16 @@ const emptyOwnerAmounts = (): OwnerAmounts => ({ self: 0, spouse: 0 });
  */
 const ownerOf = (account: InvestmentAccount): AccountOwner =>
   account.owner === 'spouse' ? 'spouse' : 'self';
+
+/** 枠の初期保有額の時価(評価額の初期値)。負値は 0 に丸める。 */
+const initialValueOf = (account: InvestmentAccount): number => Math.max(0, account.initialHolding);
+
+/**
+ * 枠の初期保有額の簿価(取得原価)。取得価額 `acquisitionCost` が指定されていればそれを、
+ * 未指定なら時価(initialHolding)を簿価とみなす(#59。含み益 0 の簡易化=後方互換)。負値は 0 に丸める。
+ */
+const initialCostBasisOf = (account: InvestmentAccount): number =>
+  Math.max(0, account.acquisitionCost ?? account.initialHolding);
 
 /** 1 つの投資枠の運用state(年をまたいで持ち越す最小限の情報)。 */
 export interface AccountState {
@@ -144,14 +157,15 @@ const emptyAccountState = (): AccountState => ({ value: 0, costBasis: 0 });
 
 /**
  * 起点時点で NISA 生涯枠が初期保有額により既に消費されている額を**名義ごと**に求める(#52)。
- * NISA 枠の初期保有額は簿価とみなし、生涯枠(1800 万)の消費対象に含める(#46)。
- * NISA は 1 人 1 口座のため、名義(owner)ごとに独立して集計する。
+ * NISA 枠の初期保有額は**簿価(取得価額)**ぶんだけ生涯枠(1800 万)を消費する(#59。取得価額が
+ * 未指定なら時価を簿価とみなす=#46 と後方互換)。NISA は 1 人 1 口座のため、名義(owner)ごとに
+ * 独立して集計する。
  */
 export const nisaInitialLifetimeUsage = (accounts: InvestmentAccount[]): OwnerAmounts => {
   const usage = emptyOwnerAmounts();
   for (const a of accounts) {
     if (a.accountType === 'nisa') {
-      usage[ownerOf(a)] += Math.max(0, a.initialHolding);
+      usage[ownerOf(a)] += initialCostBasisOf(a);
     }
   }
   return usage;
@@ -159,15 +173,15 @@ export const nisaInitialLifetimeUsage = (accounts: InvestmentAccount[]): OwnerAm
 
 /**
  * 初期投資stateを生成する。
- * 各投資枠の初期保有額(InvestmentAccount.initialHolding)を、含み益が不明なため全額を簿価
- * として扱い、その枠の初期評価額・簿価に組み入れる(モジュール冒頭の方針を参照)。
- * NISA 枠の初期保有額は簿価として生涯枠を消費するため、名義ごとに生涯簿価累計の初期値へ加算する。
+ * 各投資枠の初期保有額を、評価額(value)は時価(initialHolding)、簿価(costBasis)は取得価額
+ * (acquisitionCost、未指定なら時価)としてその枠の初期stateに組み入れる(モジュール冒頭の方針を参照)。
+ * NISA 枠は初期保有の簿価ぶんだけ生涯枠を消費するため、名義ごとに生涯簿価累計の初期値へ加算する。
  */
 export const initInvestmentState = (accounts: InvestmentAccount[]): InvestmentState => {
-  const accountStates: AccountState[] = accounts.map((a) => {
-    const holding = Math.max(0, a.initialHolding);
-    return { value: holding, costBasis: holding };
-  });
+  const accountStates: AccountState[] = accounts.map((a) => ({
+    value: initialValueOf(a),
+    costBasis: initialCostBasisOf(a),
+  }));
   return {
     accounts: accountStates,
     nisaLifetimeCostBasis: nisaInitialLifetimeUsage(accounts),
