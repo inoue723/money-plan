@@ -70,6 +70,16 @@ const addTaxBreakdown = (a: TaxBreakdown, b: TaxBreakdown): TaxBreakdown => ({
   socialInsurance: a.socialInsurance + b.socialInsurance,
 });
 
+/** 控除内訳の各フィールドを係数倍する(初年の月割按分に使う。#51)。 */
+const scaleTaxBreakdown = (t: TaxBreakdown, factor: number): TaxBreakdown => ({
+  incomeTax: t.incomeTax * factor,
+  residentTax: t.residentTax * factor,
+  healthInsurance: t.healthInsurance * factor,
+  pensionInsurance: t.pensionInsurance * factor,
+  employmentInsurance: t.employmentInsurance * factor,
+  socialInsurance: t.socialInsurance * factor,
+});
+
 /**
  * 住宅ローンの年間返済額(万円)を元利均等返済で求める。
  * 借入額 = 物件価格 − 頭金。金利 0% のときは元金の均等割り。
@@ -155,8 +165,10 @@ interface PersonYearIncome {
   salaryNet: number;
   /** 公的年金の手取り(受給前は 0)。 */
   pensionNet: number;
-  /** その他収入(手取り扱い。固定その他 + 当年の退職金)。 */
-  otherIncome: number;
+  /** 固定その他収入(手取り扱い・経常収支。初年は月割按分の対象。#51)。 */
+  recurringOther: number;
+  /** 退職金(手取り扱い・一時収支。発生年に全額計上し月割按分しない。#51)。 */
+  oneTimeOther: number;
   /** 所得税・住民税・社会保険料の内訳(給与/事業 + 年金)。 */
   tax: TaxBreakdown;
   /** 当年に退職金を計上したか(イベント名表示用)。 */
@@ -211,15 +223,17 @@ const calcPersonYearIncome = (
     pensionNet = pensionTax.netPension;
   }
 
-  // その他収入(手取り扱い): 固定のその他収入 + 退職金(最後の会社員期間の終了翌年)。
-  let otherIncome = income.other;
+  // その他収入(手取り扱い): 固定のその他収入(経常)と退職金(一時)を分けて返す。
+  // 退職金は最後の会社員期間の終了翌年に一括計上する(初年でも月割按分しない)。
+  const recurringOther = income.other;
+  let oneTimeOther = 0;
   let retiredThisYear = false;
   if (age === retirementBonusAge && income.retirementBonus > 0) {
-    otherIncome += income.retirementBonus;
+    oneTimeOther += income.retirementBonus;
     retiredThisYear = true;
   }
 
-  return { grossSalary, salaryNet, pensionNet, otherIncome, tax, retiredThisYear };
+  return { grossSalary, salaryNet, pensionNet, recurringOther, oneTimeOther, tax, retiredThisYear };
 };
 
 // ---------------------------------------------------------------------------
@@ -236,7 +250,12 @@ export function runSimulation(input: SimulationInput): SimulationResult {
   const { basic, family, income, expense, events, investment } = input;
   const { currentAge, endAge } = basic;
 
-  const startYear = new Date().getFullYear();
+  // 計算開始年(#51)。未設定なら現在の年を起点にする(従来挙動)。年齢の起点は currentAge のまま。
+  const startYear = basic.startYear ?? new Date().getFullYear();
+  // 初年に計上する月数(#51)。開始月が年途中なら初年を月割にする(例: 7 月 → 6 ヶ月)。
+  // 未設定なら月割なし(1 月開始相当 = 初年もフル 12 ヶ月。従来挙動)。
+  const firstYearMonths =
+    basic.startMonth != null ? 13 - Math.min(12, Math.max(1, Math.round(basic.startMonth))) : 12;
 
   // 子ども一覧を起点年齢基準に正規化する(将来生まれる子は baseAge が負値になる)。
   const children: NormalizedChild[] = family.children.map((c) => ({
@@ -269,6 +288,10 @@ export function runSimulation(input: SimulationInput): SimulationResult {
     const year = startYear + i;
     const eventNames: string[] = [];
 
+    // 初年(i=0)のみ経常収支を月割で計上する係数(#51)。2 年目以降・開始月未設定は 1。
+    // 一時収支(ライフイベント・退職金・一時収入)はこの係数を掛けず、発生年に全額計上する。
+    const monthFactor = i === 0 ? firstYearMonths / 12 : 1;
+
     // --- 当年の子どもの年齢(未出生は負値。0 以上のみ「在籍」) -----------------
     // 全子どもの当年年齢(入力と同順・同数。未出生は負値)。CF表の年齢行で使う。
     const allChildAges = children.map((c) => c.baseAge + i);
@@ -299,18 +322,25 @@ export function runSimulation(input: SimulationInput): SimulationResult {
       .filter((c): c is DependentCategory => c !== undefined);
 
     const selfYear = calcPersonYearIncome(selfPlan, age, { hasSpouseDeduction, dependents });
-    const grossSalary = selfYear.grossSalary;
 
     // 本人 + 配偶者を合算する。控除内訳・手取り・年金手取りはそれぞれ両者の和とする。
-    const taxBreakdown = spouseYear ? addTaxBreakdown(selfYear.tax, spouseYear.tax) : selfYear.tax;
-    const salaryNet = selfYear.salaryNet + (spouseYear ? spouseYear.salaryNet : 0);
-    const pensionNet = selfYear.pensionNet + (spouseYear ? spouseYear.pensionNet : 0);
+    // 経常収支(額面・手取り・年金手取り・税・固定その他)は初年のみ月割係数で按分する(#51)。
+    // ※配偶者控除の 103 万円判定(hasSpouseDeduction)は按分前の年額で行っているため影響しない。
+    const grossSalary = selfYear.grossSalary * monthFactor;
+    const fullTax = spouseYear ? addTaxBreakdown(selfYear.tax, spouseYear.tax) : selfYear.tax;
+    const taxBreakdown = monthFactor === 1 ? fullTax : scaleTaxBreakdown(fullTax, monthFactor);
+    const salaryNet = (selfYear.salaryNet + (spouseYear ? spouseYear.salaryNet : 0)) * monthFactor;
+    const pensionNet =
+      (selfYear.pensionNet + (spouseYear ? spouseYear.pensionNet : 0)) * monthFactor;
 
-    const childAllowance = calcChildAllowanceManyen(childAgesThisYear);
+    const childAllowance = calcChildAllowanceManyen(childAgesThisYear) * monthFactor;
 
-    // その他収入(手取り扱い): 本人・配偶者の固定その他 + 退職金 + 一時収入イベント。
-    // 退職金は各人の最後の会社員期間の終了翌年に一括計上する。
-    let otherIncome = selfYear.otherIncome + (spouseYear ? spouseYear.otherIncome : 0);
+    // その他収入(手取り扱い): 固定その他(経常=月割按分)+ 退職金・一時収入イベント(一時=全額計上)。
+    // 退職金は各人の最後の会社員期間の終了翌年に一括計上する(初年でも按分しない)。
+    const recurringOther =
+      (selfYear.recurringOther + (spouseYear ? spouseYear.recurringOther : 0)) * monthFactor;
+    const oneTimeOther = selfYear.oneTimeOther + (spouseYear ? spouseYear.oneTimeOther : 0);
+    let otherIncome = recurringOther + oneTimeOther;
     if (selfYear.retiredThisYear) eventNames.push('退職金');
     if (spouseYear?.retiredThisYear) eventNames.push('配偶者退職金');
 
@@ -319,10 +349,14 @@ export function runSimulation(input: SimulationInput): SimulationResult {
     // =========================================================================
     // 支出項目(#31): 各項目について本人年齢が期間内にある月額 × 12 × 物価上昇係数。
     // 物価上昇はシミュレーション起点(i=0)からの経過年数 i で項目ごとに複利適用する。
+    // 初年(#51)は経常支出のため月割係数で按分する。
     const expenseItems = expense.items.map((item) => {
       const period = item.periods.find((p) => age >= p.startAge && age <= p.endAge);
       const monthly = period ? period.monthlyAmount : 0;
-      return { name: item.name, amount: monthly * 12 * growthFactor(item.inflationRate, i) };
+      return {
+        name: item.name,
+        amount: monthly * 12 * growthFactor(item.inflationRate, i) * monthFactor,
+      };
     });
     const itemsTotal = expenseItems.reduce((sum, it) => sum + it.amount, 0);
 
@@ -353,22 +387,26 @@ export function runSimulation(input: SimulationInput): SimulationResult {
           rent = 0;
         }
       }
+      // 初年(#51)は家賃も経常支出のため月割係数で按分する(更新料込みの当年額に一律適用)。
+      rent *= monthFactor;
     }
 
-    // 教育費(子どもの進路プランから算出。支出項目とは別枠で維持)。
-    const education = children.reduce(
-      (sum, c) => sum + educationCostForAge(c.education, c.baseAge + i),
-      0,
-    );
+    // 教育費(子どもの進路プランから算出。支出項目とは別枠で維持)。初年は月割按分する(#51)。
+    const education =
+      monthFactor *
+      children.reduce((sum, c) => sum + educationCostForAge(c.education, c.baseAge + i), 0);
 
-    // 住宅ローン返済(住宅購入イベント。返済期間内のみ)。
+    // 住宅ローン返済(住宅購入イベント。返済期間内のみ)。経常支出のため初年は月割按分する(#51)。
+    // ※頭金は一時支出(eventExpense)として按分せず全額計上する。
     // 家賃(#50)は住宅購入年以降 0 になるため、二重計上は自動的に回避される。
-    const loan = events.reduce((sum, e) => {
-      if (e.type !== 'homePurchase') return sum;
-      const withinTerm = age >= e.age && age < e.age + e.loanTermYears;
-      if (!withinTerm) return sum;
-      return sum + annualLoanPayment(e.price, e.downPayment, e.loanInterestRate, e.loanTermYears);
-    }, 0);
+    const loan =
+      monthFactor *
+      events.reduce((sum, e) => {
+        if (e.type !== 'homePurchase') return sum;
+        const withinTerm = age >= e.age && age < e.age + e.loanTermYears;
+        if (!withinTerm) return sum;
+        return sum + annualLoanPayment(e.price, e.downPayment, e.loanInterestRate, e.loanTermYears);
+      }, 0);
 
     // ライフイベント費用(一時支出 + 車の維持費・買替)。
     let eventExpense = 0;
@@ -410,7 +448,7 @@ export function runSimulation(input: SimulationInput): SimulationResult {
     // =========================================================================
     // 4. 投資(積立・運用・取崩・課税)
     // =========================================================================
-    const invStep = stepInvestment(investmentState, { age, investment });
+    const invStep = stepInvestment(investmentState, { age, investment, monthFactor });
     investmentState = invStep.state;
 
     // NISA 上限で積立の一部が停止した最初の年に注記する(結果側での可視化。表現は #26 側に委ねる)。
@@ -434,7 +472,7 @@ export function runSimulation(input: SimulationInput): SimulationResult {
 
     const incomeBreakdown: IncomeBreakdown = {
       grossSalary,
-      spouseSalary,
+      spouseSalary: spouseSalary * monthFactor,
       net: salaryNet,
       pension: pensionNet,
       childAllowance,

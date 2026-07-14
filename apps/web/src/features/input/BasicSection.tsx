@@ -79,6 +79,11 @@ export function BasicSection() {
 
   const hasSpouse = family.spouse !== undefined;
 
+  // 計算開始年月(#51)。未設定の保存済みプランは表示上は当月を初期値とする。
+  const now = new Date();
+  const startYear = basic.startYear ?? now.getFullYear();
+  const startMonth = basic.startMonth ?? now.getMonth() + 1;
+
   const updateChild = (index: number, patch: Partial<Child>) => {
     const children = family.children.map((c, i) => (i === index ? { ...c, ...patch } : c));
     setFamily({ children });
@@ -87,6 +92,25 @@ export function BasicSection() {
   return (
     <div className="flex flex-col gap-3">
       <div className="grid grid-cols-2 gap-2">
+        <NumberField
+          label="計算開始年"
+          value={startYear}
+          onChange={(v) => setBasic({ startYear: v })}
+          min={1900}
+          max={2200}
+          unit="年"
+          required
+        />
+        <SelectField
+          label="計算開始月"
+          value={String(startMonth)}
+          options={Array.from({ length: 12 }, (_, i) => ({
+            value: String(i + 1),
+            label: `${i + 1}月`,
+          }))}
+          onChange={(v) => setBasic({ startMonth: Number(v) })}
+          hint="初年はこの月から12月までを月割で計算"
+        />
         <NumberField
           label="現在の年齢"
           value={basic.currentAge}

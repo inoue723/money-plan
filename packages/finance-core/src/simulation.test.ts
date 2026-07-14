@@ -865,3 +865,148 @@ describe('runSimulation - 配偶者の収入(#49)', () => {
     expect(at61.income.pension).toBeGreaterThan(0);
   });
 });
+
+describe('runSimulation - 計算開始年月と初年の月割(#51)', () => {
+  /** 月割検証用の最小入力。物価上昇・昇給なしで金額を安定させ、初年/2年目を比較する。 */
+  const monthlyBase = (overrides: Partial<SimulationInput> = {}): SimulationInput =>
+    baseInput({
+      basic: { currentAge: 30, endAge: 31, savings: 0 },
+      income: {
+        workPeriods: [workPeriod({ startAge: 30, endAge: 65, income: 600, raiseRate: 0 })],
+        retirementBonus: 0,
+        pension: 0,
+        other: 120,
+      },
+      expense: { items: [expenseItem('生活費', 10, 0)] },
+      investment: { accounts: [] },
+      ...overrides,
+    });
+
+  it('計算開始年(startYear)が CF 表の先頭年になる', () => {
+    const result = runSimulation(
+      monthlyBase({
+        basic: { currentAge: 30, endAge: 31, savings: 0, startYear: 2030, startMonth: 4 },
+      }),
+    );
+    expect(result[0]!.year).toBe(2030);
+    expect(result[1]!.year).toBe(2031);
+    // 年齢の起点は currentAge のまま(開始年を変えても変わらない)。
+    expect(result[0]!.age).toBe(30);
+  });
+
+  it('7月開始なら初年の経常収支を 6/12 で按分し、2年目はフル12ヶ月', () => {
+    const result = runSimulation(
+      monthlyBase({ basic: { currentAge: 30, endAge: 31, savings: 0, startMonth: 7 } }),
+    );
+    const y0 = result[0]!;
+    const y1 = result[1]!;
+    // 額面(600)・固定その他(120)・生活費(月10=年120)を初年は半分に。
+    expect(y0.income.grossSalary).toBeCloseTo(300);
+    expect(y0.income.other).toBeCloseTo(60);
+    expect(y0.expense.items[0]!.amount).toBeCloseTo(60);
+    // 手取り・税も按分される(税>0 かつ初年は2年目の半分)。
+    expect(y0.income.net).toBeCloseTo(y1.income.net / 2);
+    expect(y0.tax.socialInsurance).toBeCloseTo(y1.tax.socialInsurance / 2);
+    // 2年目はフル。
+    expect(y1.income.grossSalary).toBeCloseTo(600);
+    expect(y1.income.other).toBeCloseTo(120);
+    expect(y1.expense.items[0]!.amount).toBeCloseTo(120);
+  });
+
+  it('開始月未設定なら従来どおり初年もフル12ヶ月(月割なし)', () => {
+    const result = runSimulation(monthlyBase());
+    const y0 = result[0]!;
+    expect(y0.income.grossSalary).toBeCloseTo(600);
+    expect(y0.income.other).toBeCloseTo(120);
+    expect(y0.expense.items[0]!.amount).toBeCloseTo(120);
+  });
+
+  it('1月開始(startMonth=1)は月割なしと同じ(フル12ヶ月)', () => {
+    const withJan = runSimulation(
+      monthlyBase({ basic: { currentAge: 30, endAge: 31, savings: 0, startMonth: 1 } }),
+    );
+    const without = runSimulation(monthlyBase());
+    expect(withJan[0]!.income.grossSalary).toBeCloseTo(without[0]!.income.grossSalary);
+    expect(withJan[0]!.expense.items[0]!.amount).toBeCloseTo(without[0]!.expense.items[0]!.amount);
+  });
+
+  it('一時収入(ライフイベント)は初年でも按分せず全額計上する', () => {
+    const result = runSimulation(
+      monthlyBase({
+        basic: { currentAge: 30, endAge: 31, savings: 0, startMonth: 7 },
+        events: [{ type: 'oneTimeIncome', age: 30, name: '贈与', amount: 100 }],
+      }),
+    );
+    const y0 = result[0]!;
+    // 固定その他(120)は按分で60、一時収入100は全額 → other = 160。
+    expect(y0.income.other).toBeCloseTo(160);
+  });
+
+  it('住宅購入の頭金は一時支出として按分せず、ローン返済は経常支出として按分する', () => {
+    const result = runSimulation(
+      monthlyBase({
+        basic: { currentAge: 30, endAge: 31, savings: 0, startMonth: 7 },
+        events: [
+          {
+            type: 'homePurchase',
+            age: 30,
+            price: 3000,
+            downPayment: 500,
+            loanInterestRate: 0,
+            loanTermYears: 10,
+          },
+        ],
+      }),
+    );
+    const y0 = result[0]!;
+    const y1 = result[1]!;
+    // 頭金は全額(按分しない)。
+    expect(y0.expense.events).toBeCloseTo(500);
+    // ローン返済は初年のみ半分(金利0なので年 (3000-500)/10 = 250 → 初年 125)。
+    expect(y0.expense.loan).toBeCloseTo(125);
+    expect(y1.expense.loan).toBeCloseTo(250);
+  });
+
+  it('積立額と運用益も初年は月割で按分する', () => {
+    const result = runSimulation(
+      monthlyBase({
+        basic: { currentAge: 30, endAge: 31, savings: 0, startMonth: 7 },
+        investment: {
+          accounts: [
+            {
+              name: 'NISA',
+              accountType: 'nisa',
+              owner: 'self',
+              initialHolding: 0,
+              monthlyAmount: 5, // 年 60
+              annualReturn: 10,
+              startAge: 30,
+              endAge: 65,
+            },
+          ],
+        },
+      }),
+    );
+    const y0 = result[0]!;
+    const y1 = result[1]!;
+    // 初年: 積立 60×0.5=30、運用益 (0+30)×0.10×0.5=1.5。
+    expect(y0.investmentContribution).toBeCloseTo(30);
+    expect(y0.investmentGain).toBeCloseTo(1.5);
+    // 2年目: 積立 60、運用益 (31.5+60)×0.10=9.15。
+    expect(y1.investmentContribution).toBeCloseTo(60);
+    expect(y1.investmentGain).toBeCloseTo(9.15);
+  });
+
+  it('児童手当も初年は月割で按分する', () => {
+    const result = runSimulation(
+      monthlyBase({
+        basic: { currentAge: 30, endAge: 31, savings: 0, startMonth: 7 },
+        family: { children: [{ bornAtParentAge: 30, education: publicPlan }] },
+      }),
+    );
+    const y0 = result[0]!;
+    const y1 = result[1]!;
+    expect(y0.income.childAllowance).toBeGreaterThan(0);
+    expect(y0.income.childAllowance).toBeCloseTo(y1.income.childAllowance / 2);
+  });
+});

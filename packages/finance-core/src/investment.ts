@@ -90,6 +90,12 @@ export interface InvestmentStepParams {
   age: number;
   /** 投資設定(投資枠のリスト)。 */
   investment: InvestmentInput;
+  /**
+   * 当年の月割係数(0〜1、#51)。初年(計算開始月が年途中)のみ 1 未満で、積立額と運用益を
+   * この係数で按分する(例: 7 月開始なら 0.5)。未指定・2 年目以降は 1(フル 12 ヶ月)。
+   * NISA の年間投資枠(360 万)は暦年単位のため按分せず、按分後の積立額に対して判定する。
+   */
+  monthFactor?: number;
 }
 
 /** 1ステップ計算の結果(全枠合計)。 */
@@ -119,6 +125,8 @@ interface AccountStepParams {
   age: number;
   /** この枠が積み立て可能な上限(万円)。NISA 枠のみ有限、課税枠は Infinity。 */
   contributionCap: number;
+  /** 当年の月割係数(0〜1、#51)。積立額・運用益に乗じる。初年以外は 1。 */
+  monthFactor: number;
 }
 
 /** 1 つの枠の 1 ステップ計算結果(内部用)。 */
@@ -175,19 +183,21 @@ export const initInvestmentState = (accounts: InvestmentAccount[]): InvestmentSt
  * 3. 取り崩し(開始年齢に達していれば年間取崩額を引き、課税口座なら評価益按分で課税)
  */
 const stepAccount = (prev: AccountState, params: AccountStepParams): AccountStepResult => {
-  const { account, age, contributionCap } = params;
+  const { account, age, contributionCap, monthFactor } = params;
   const { accountType, monthlyAmount, annualReturn, startAge, endAge, withdrawal } = account;
 
   // --- 1. 積立(上限でクランプ) -------------------------------------------
   // 積立開始年齢「以降」かつ終了年齢「未満」の間のみ積立(= startAge <= age < endAge)。
-  const desired = age >= startAge && age < endAge ? monthlyAmount * 12 : 0;
+  // 初年(#51)は月割係数で按分する(例: 7 月開始なら年額の 6/12)。
+  const desired = age >= startAge && age < endAge ? monthlyAmount * 12 * monthFactor : 0;
   const contribution = Math.max(0, Math.min(desired, contributionCap));
   const uninvested = desired - contribution;
   const principal = prev.value + contribution;
   const costBasisAfterContribution = prev.costBasis + contribution;
 
   // --- 2. 運用 -------------------------------------------------------------
-  const gain = principal * (annualReturn / 100);
+  // 初年(#51)は運用益も月割係数で按分する(年途中開始 = 運用期間が短いため)。
+  const gain = principal * (annualReturn / 100) * monthFactor;
   const grownValue = principal + gain;
 
   // --- 3. 取り崩し ---------------------------------------------------------
@@ -237,7 +247,7 @@ export const stepInvestment = (
   prev: InvestmentState,
   params: InvestmentStepParams,
 ): InvestmentStepResult => {
-  const { age, investment } = params;
+  const { age, investment, monthFactor = 1 } = params;
   const accounts = investment.accounts;
 
   // NISA 上限の残余を名義ごとに保持する。年間枠は毎年リセット、生涯枠は名義別の簿価累計から算出。
@@ -270,7 +280,7 @@ export const stepInvestment = (
       ? Math.max(0, Math.min(annualNisaRemaining[owner], lifetimeNisaRemaining[owner]))
       : Number.POSITIVE_INFINITY;
 
-    const step = stepAccount(prevAccount, { account, age, contributionCap });
+    const step = stepAccount(prevAccount, { account, age, contributionCap, monthFactor });
 
     if (isNisa) {
       annualNisaRemaining[owner] -= step.contribution;
