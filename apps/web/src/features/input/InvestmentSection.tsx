@@ -57,8 +57,9 @@ export function InvestmentSection() {
     setInvestment({ accounts: [...accounts, createDefaultAccount(currentAge)] });
   };
 
-  // NISA 枠の初期保有額(現在投資額)の合計を名義ごとに集計する(#52)。生涯投資枠(1800 万)は
-  // 名義ごとに独立適用されるため、いずれかの名義で上限を超える入力は名義別に警告する。
+  // NISA 枠の初期保有額の簿価(取得価額)合計を名義ごとに集計する(#52 / #59)。生涯投資枠
+  // (1800 万)は簿価ベースかつ名義ごとに独立適用されるため、いずれかの名義で上限を超える入力は
+  // 名義別に警告する。
   const nisaInitialUsage = nisaInitialLifetimeUsage(accounts);
   const overLimitOwners = OWNER_OPTIONS.map((o) => o.value).filter(
     (owner) => nisaInitialUsage[owner] > NISA_LIFETIME_LIMIT,
@@ -78,8 +79,8 @@ export function InvestmentSection() {
           key={owner}
           className="rounded-md border border-rose-200 bg-rose-50 px-2 py-1 text-[11px] text-rose-600"
         >
-          {OWNER_LABEL[owner]}名義の NISA 枠の現在投資額の合計が {nisaInitialUsage[owner]} 万円で、
-          生涯投資枠の上限（{NISA_LIFETIME_LIMIT}{' '}
+          {OWNER_LABEL[owner]}名義の NISA 枠の取得価額(簿価)の合計が {nisaInitialUsage[owner]}{' '}
+          万円で、生涯投資枠の上限（{NISA_LIFETIME_LIMIT}{' '}
           万円）を超えています。超過分は生涯枠を消費できません。
         </p>
       ))}
@@ -176,13 +177,32 @@ function AccountFields({
           }
         />
         <NumberField
-          label="現在投資額"
+          label="現在投資額(時価)"
           value={account.initialHolding}
           onChange={(v) => onChange({ ...account, initialHolding: v })}
           min={0}
           step={0.1}
           unit="万円"
-          hint={account.accountType === 'nisa' ? '初期保有分も生涯枠を消費' : '起点で保有中の額'}
+          hint="起点で保有中の評価額"
+        />
+        <NumberField
+          label="取得価額(簿価)"
+          value={account.acquisitionCost ?? account.initialHolding}
+          onChange={(v) =>
+            // 時価と同額なら acquisitionCost を保持せず undefined に戻す(=時価を簿価とみなす簡易化)。
+            onChange({
+              ...account,
+              acquisitionCost: v === account.initialHolding ? undefined : v,
+            })
+          }
+          min={0}
+          step={0.1}
+          unit="万円"
+          hint={
+            account.accountType === 'nisa'
+              ? '未入力は時価と同額。簿価が生涯枠を消費'
+              : '未入力は時価と同額。取崩時の課税に使用'
+          }
         />
         <NumberField
           label="毎月の積立額"
