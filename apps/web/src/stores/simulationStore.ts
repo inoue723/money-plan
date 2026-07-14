@@ -52,12 +52,18 @@ import type {
 // デフォルト入力(SPEC.md 2.2 の各デフォルト値)
 // ---------------------------------------------------------------------------
 
+/** 新規プランの計算開始年月のデフォルト(#51)。当月を起点にする。 */
+const DEFAULT_START = new Date();
+
 /** SPEC.md 2.2 のデフォルト値に基づく初期入力。金額は万円、率は %。 */
 export const DEFAULT_INPUT: SimulationInput = {
   basic: {
     currentAge: 30, // シミュレーション起点(18〜80)
     endAge: 90, // SPEC.md 2.2 デフォルト 90 歳
     savings: 300, // 現在の預金残高(万円)
+    // 計算開始年月(#51)。デフォルトは当月。初年はこの月から 12 月までを月割で計算する。
+    startYear: DEFAULT_START.getFullYear(),
+    startMonth: DEFAULT_START.getMonth() + 1,
   },
   family: {
     spouse: undefined, // 配偶者なし
@@ -169,7 +175,7 @@ export interface PlanTab {
  * 永続化スキーマのバージョン。`tabs` や入力形状(`SimulationInput`)の構造を
  * 破壊的に変更したら増やし、`persist` の `migrate` で旧データを変換する。
  */
-export const PERSIST_VERSION = 4;
+export const PERSIST_VERSION = 5;
 
 /** localStorage のキー(SPEC.md 4.1: ローカルのみに保存)。 */
 export const PERSIST_KEY = 'money-plan/simulation';
@@ -537,6 +543,12 @@ export const useSimulationStore = create<SimulationState>()(
             })),
           };
         }
+
+        // v4 → v5: 計算開始年月(basic.startYear / startMonth)を追加(#51)。
+        // 保存済みプランは開始年月を「未設定」のまま残す。engine 側で未設定 = 月割なし
+        // (1 月開始相当=初年もフル 12 ヶ月)にフォールバックするため、従来挙動を維持できる。
+        // 新規プランのみ DEFAULT_INPUT により当月起点(初年月割)となる。
+        // 明示的なデータ変換は不要のため、ここではバージョンを上げるのみ(意図的な no-op)。
 
         return data;
       },
