@@ -42,7 +42,7 @@ export function CashflowTableSection() {
           <table className="border-collapse text-sm">
             <caption className="sr-only">
               全期間({result[0]?.year}年〜{result[result.length - 1]?.year}
-              年)のキャッシュフロー表。列が年次、行が収入・控除・支出・収支/資産の内訳。金額の単位は万円。
+              年)のキャッシュフロー表。列が年次、行が収入・支出(税・社会保険を含む)・収支/資産の内訳。金額の単位は万円。
               西暦ヘッダーをクリックすると該当年の列をハイライトします。
             </caption>
             <thead>

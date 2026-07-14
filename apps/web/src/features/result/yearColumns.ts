@@ -2,8 +2,11 @@
  * CF表(キャッシュフロー表)の行定義(issue #26)。
  *
  * 従来の「年次一覧テーブル(行=年次・列=指標)」を廃止し、FP のキャッシュフロー表形式
- * (横=年次・縦=内訳)に置き換えた。この表の各行(内訳項目)と、収入/控除/支出/収支・資産の
+ * (横=年次・縦=内訳)に置き換えた。この表の各行(内訳項目)と、収入/支出/収支・資産の
  * セクション構成をここで一元定義する。金額はすべて「万円」。
+ *
+ * #67 で収入セクションを「額面合計」に簡素化し(運用益・手取り収入の行を削除)、
+ * 控除(税・社会保険)セクションを廃止して支出セクションへ統合した。
  *
  * 数値フォーマッタ(formatMan / truncMan)は本ファイルで定義し、CF表・
  * グラフ(chartKit 経由)で共有して表示・丸めを統一する。
@@ -30,6 +33,24 @@ export function totalExpense(r: YearlyResult): number {
   const e = r.expense;
   const items = e.items.reduce((sum, it) => sum + it.amount, 0);
   return (e.rent ?? 0) + items + e.education + e.loan + e.events;
+}
+
+/**
+ * CF表の「収入合計」(万円。#67)。
+ * 額面ベースの収入のみを合計し、運用益は含めない(運用益は「投資資産」側で反映されるため)。
+ */
+function totalIncome(r: YearlyResult): number {
+  const i = r.income;
+  return i.grossSalary + i.spouseSalary + i.pension + i.childAllowance + i.other;
+}
+
+/**
+ * CF表の「支出合計」(万円。#67)。
+ * 控除セクションを廃止して税・社会保険を支出に統合したため、支出内訳に
+ * 所得税・住民税・社会保険料(健康保険 + 厚生年金 + 雇用保険)を加えた額とする。
+ */
+function totalExpenseWithTax(r: YearlyResult): number {
+  return totalExpense(r) + r.tax.incomeTax + r.tax.residentTax + r.tax.socialInsurance;
 }
 
 /** CF表の 1 行(内訳項目)の定義。横に年次が並び、各年の値を `get` で取り出す。 */
@@ -95,7 +116,10 @@ export function buildAgeHeaderRows(result: YearlyResult[]): AgeHeaderRow[] {
   return rows;
 }
 
-/** 支出セクションの内訳行を組み立てる(#31)。支出項目は結果から動的に展開する。 */
+/**
+ * 支出セクションの内訳行を組み立てる(#31)。支出項目は結果から動的に展開する。
+ * #67 で控除(税・社会保険)セクションを廃止し、その5行を支出項目の後・「支出合計」の前に統合した。
+ */
 function buildExpenseRows(result: YearlyResult[]): CashflowRow[] {
   const rows: CashflowRow[] = [];
 
@@ -116,7 +140,15 @@ function buildExpenseRows(result: YearlyResult[]): CashflowRow[] {
     rows.push({ label: '住宅ローン', get: (r) => r.expense.loan });
   }
   rows.push({ label: 'イベント費用', get: (r) => r.expense.events });
-  rows.push({ label: '支出合計', get: (r) => totalExpense(r), emphasize: true });
+
+  // 控除(税・社会保険)は #67 で支出セクションに統合した。支出項目の後・合計の前に並べる。
+  rows.push({ label: '所得税', get: (r) => r.tax.incomeTax });
+  rows.push({ label: '住民税', get: (r) => r.tax.residentTax });
+  rows.push({ label: '健康保険', get: (r) => r.tax.healthInsurance });
+  rows.push({ label: '厚生年金', get: (r) => r.tax.pensionInsurance });
+  rows.push({ label: '雇用保険', get: (r) => r.tax.employmentInsurance });
+
+  rows.push({ label: '支出合計', get: (r) => totalExpenseWithTax(r), emphasize: true });
   return rows;
 }
 
@@ -135,18 +167,7 @@ export function buildCashflowSections(result: YearlyResult[]): CashflowSection[]
         { label: '年金', get: (r) => r.income.pension },
         { label: '児童手当', get: (r) => r.income.childAllowance },
         { label: 'その他収入', get: (r) => r.income.other },
-        { label: '運用益', get: (r) => r.income.investmentGain },
-        { label: '手取り収入', get: (r) => r.income.net, emphasize: true },
-      ],
-    },
-    {
-      heading: '控除(税・社会保険)',
-      rows: [
-        { label: '所得税', get: (r) => r.tax.incomeTax },
-        { label: '住民税', get: (r) => r.tax.residentTax },
-        { label: '健康保険', get: (r) => r.tax.healthInsurance },
-        { label: '厚生年金', get: (r) => r.tax.pensionInsurance },
-        { label: '雇用保険', get: (r) => r.tax.employmentInsurance },
+        { label: '収入合計', get: (r) => totalIncome(r), emphasize: true },
       ],
     },
     {
