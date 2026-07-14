@@ -5,12 +5,14 @@
  * - プラン名をここで編集する(タブのダブルクリック編集は廃止)。名前は全タブでユニーク。
  * - 「変更を保存」でアクティブタブを上書き保存、「変更を破棄」で最後の保存内容へ戻す。
  *   どちらも未保存の変更があるときのみ有効。Cmd+S(Windows は Ctrl+S)でも保存できる。
+ *   保存すると「保存しました」トーストを表示する(#65)。
  * - 「複製」で現在のプランを複製し、複製タブをアクティブにする(#45)。
  *
  * 保存先はブラウザの localStorage のみ(ストアの persist 経由)。外部送信はしない。
  */
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { isTabDirty, useSimulationStore } from '../../stores/simulationStore';
+import { showToast } from '../../stores/toastStore';
 
 export function PlanSummary() {
   const activeTabId = useSimulationStore((s) => s.activeTabId);
@@ -31,17 +33,23 @@ export function PlanSummary() {
     setName(storedName);
   }, [activeTabId, storedName]);
 
+  // 保存はボタンと Cmd/Ctrl+S の2経路。どちらも保存後に「保存しました」トーストを出す(#65)。
+  const save = useCallback(() => {
+    saveActiveTab();
+    showToast('保存しました');
+  }, [saveActiveTab]);
+
   // Cmd+S / Ctrl+S でアクティブタブを上書き保存する(ブラウザの保存ダイアログは抑止)。
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 's') {
         e.preventDefault();
-        saveActiveTab();
+        save();
       }
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [saveActiveTab]);
+  }, [save]);
 
   const commitName = () => {
     const trimmed = name.trim();
@@ -77,7 +85,7 @@ export function PlanSummary() {
       <div className="flex items-center gap-2">
         <button
           type="button"
-          onClick={saveActiveTab}
+          onClick={save}
           disabled={!dirty}
           className="shrink-0 whitespace-nowrap rounded-md bg-sky-600 px-3 py-1 text-sm font-medium text-white hover:bg-sky-700 disabled:cursor-not-allowed disabled:bg-slate-300"
           title="変更を保存(Cmd/Ctrl+S)"
