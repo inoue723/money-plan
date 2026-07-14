@@ -1,12 +1,12 @@
 /**
- * F-02 収入情報セクション(#9 / #30)。
+ * F-02 収入情報セクション(#9 / #30 / #49)。
  *
- * 本人の収入は「働き方期間」(開始年齢〜終了年齢 × 会社員/個人事業主)のリストで入力する。
+ * 本人・配偶者ともに「働き方期間」(開始年齢〜終了年齢 × 会社員/個人事業主)のリストで入力する。
  * 期間は複数追加でき、重複しないようバリデーションする(隙間 = 無収入期間は許容)。
- * 退職金 / 年金受給額 / その他収入 は現行どおり入力する。
- * 配偶者年収は F-01(配偶者あり時)で入力するためここでは案内のみ表示する。
+ * 退職金 / 年金受給額 / その他収入 も本人・配偶者で同じ UI・同じ計算方式を使う(#49)。
+ * 配偶者の年齢は F-01(基本情報)で入力し、収入は本セクションで本人と同じ UI で入力する。
  */
-import type { WorkPeriod, WorkStyle } from '@money-plan/finance-core';
+import type { IncomeInput, WorkPeriod, WorkStyle } from '@money-plan/finance-core';
 import { useSimulationStore } from '../../stores/simulationStore';
 import { NumberField } from '../../components/NumberField';
 import { AgeNumberField } from '../../components/AgeNumberField';
@@ -18,8 +18,8 @@ const WORK_STYLE_OPTIONS: { value: WorkStyle; label: string }[] = [
 ];
 
 /** 新規追加時の既定の働き方期間(既存期間の直後から 65 歳まで・会社員)。 */
-const createDefaultPeriod = (periods: WorkPeriod[], currentAge: number): WorkPeriod => {
-  const startAge = periods.length > 0 ? Math.max(...periods.map((p) => p.endAge)) + 1 : currentAge;
+const createDefaultPeriod = (periods: WorkPeriod[], baseAge: number): WorkPeriod => {
+  const startAge = periods.length > 0 ? Math.max(...periods.map((p) => p.endAge)) + 1 : baseAge;
   return {
     startAge,
     endAge: Math.max(startAge, 65),
@@ -49,26 +49,32 @@ const validatePeriods = (periods: WorkPeriod[]): string[] => {
   return warnings;
 };
 
-export function IncomeSection() {
-  const income = useSimulationStore((s) => s.input.income);
-  const currentAge = useSimulationStore((s) => s.input.basic.currentAge);
-  const hasSpouse = useSimulationStore((s) => s.input.family.spouse !== undefined);
-  const setIncome = useSimulationStore((s) => s.setIncome);
+interface IncomeFieldsProps {
+  /** 対象の収入情報(本人 or 配偶者)。 */
+  income: IncomeInput;
+  /** 働き方期間を新規追加するときの既定開始年齢(本人=現在年齢 / 配偶者=配偶者年齢)。 */
+  baseAge: number;
+  /** 収入情報の部分更新。 */
+  onChange: (patch: Partial<IncomeInput>) => void;
+}
 
+/**
+ * 収入情報の入力フォーム(本人・配偶者で共通。#49)。
+ * 働き方期間リスト + 退職金 / 年金 / その他収入 をまとめて編集する。
+ */
+function IncomeFields({ income, baseAge, onChange }: IncomeFieldsProps) {
   const periods = income.workPeriods;
 
   const updatePeriod = (index: number, patch: Partial<WorkPeriod>) => {
-    setIncome({
-      workPeriods: periods.map((p, i) => (i === index ? { ...p, ...patch } : p)),
-    });
+    onChange({ workPeriods: periods.map((p, i) => (i === index ? { ...p, ...patch } : p)) });
   };
 
   const removePeriod = (index: number) => {
-    setIncome({ workPeriods: periods.filter((_, i) => i !== index) });
+    onChange({ workPeriods: periods.filter((_, i) => i !== index) });
   };
 
   const addPeriod = () => {
-    setIncome({ workPeriods: [...periods, createDefaultPeriod(periods, currentAge)] });
+    onChange({ workPeriods: [...periods, createDefaultPeriod(periods, baseAge)] });
   };
 
   const warnings = validatePeriods(periods);
@@ -169,7 +175,7 @@ export function IncomeSection() {
         <NumberField
           label="退職金"
           value={income.retirementBonus}
-          onChange={(v) => setIncome({ retirementBonus: v })}
+          onChange={(v) => onChange({ retirementBonus: v })}
           min={0}
           unit="万円"
           hint="最後の会社員期間の終了翌年に計上"
@@ -177,7 +183,7 @@ export function IncomeSection() {
         <NumberField
           label="年金受給額(年額)"
           value={income.pension}
-          onChange={(v) => setIncome({ pension: v })}
+          onChange={(v) => onChange({ pension: v })}
           min={0}
           unit="万円"
           hint="就労終了の翌年から受給"
@@ -186,16 +192,50 @@ export function IncomeSection() {
       <NumberField
         label="その他の収入(年額)"
         value={income.other}
-        onChange={(v) => setIncome({ other: v })}
+        onChange={(v) => onChange({ other: v })}
         min={0}
         unit="万円"
         hint="副業・不動産収入など(手取り扱い)"
       />
-      <p className="text-[11px] text-slate-400">
-        {hasSpouse
-          ? '配偶者の年収は「基本情報」で入力します。'
-          : '配偶者の年収は「基本情報」で配偶者ありにすると入力できます。'}
-      </p>
+    </div>
+  );
+}
+
+export function IncomeSection() {
+  const income = useSimulationStore((s) => s.input.income);
+  const currentAge = useSimulationStore((s) => s.input.basic.currentAge);
+  const spouse = useSimulationStore((s) => s.input.family.spouse);
+  const setIncome = useSimulationStore((s) => s.setIncome);
+  const setFamily = useSimulationStore((s) => s.setFamily);
+
+  return (
+    <div className="flex flex-col gap-5">
+      <div className="flex flex-col gap-2">
+        <p className="text-xs font-semibold text-slate-700">本人の収入</p>
+        <IncomeFields income={income} baseAge={currentAge} onChange={(patch) => setIncome(patch)} />
+      </div>
+
+      {spouse ? (
+        <div className="flex flex-col gap-2 border-t border-slate-200 pt-4">
+          <div>
+            <p className="text-xs font-semibold text-slate-700">配偶者の収入</p>
+            <p className="text-[11px] text-slate-400">
+              配偶者の年齢は「基本情報」で入力します。税・社会保険料は配偶者の年齢を基準に計算します。
+            </p>
+          </div>
+          <IncomeFields
+            income={spouse.income}
+            baseAge={spouse.age}
+            onChange={(patch) =>
+              setFamily({ spouse: { ...spouse, income: { ...spouse.income, ...patch } } })
+            }
+          />
+        </div>
+      ) : (
+        <p className="text-[11px] text-slate-400 border-t border-slate-200 pt-4">
+          配偶者の収入は「基本情報」で配偶者ありにすると入力できます。
+        </p>
+      )}
     </div>
   );
 }

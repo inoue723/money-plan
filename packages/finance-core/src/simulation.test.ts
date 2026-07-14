@@ -725,3 +725,139 @@ describe('runSimulation', () => {
     expect(elapsed).toBeLessThan(50); // 十分高速(参考値)
   });
 });
+
+describe('runSimulation - 配偶者の収入(#49)', () => {
+  it('配偶者の会社員収入が spouseSalary に反映され、手取り(net)が本人+配偶者で増える', () => {
+    const withoutSpouse = runSimulation(baseInput())[0]!;
+    const withSpouse = runSimulation(
+      baseInput({
+        family: {
+          children: [],
+          spouse: {
+            age: 30,
+            income: {
+              workPeriods: [workPeriod({ startAge: 30, endAge: 64, income: 400, raiseRate: 0 })],
+              retirementBonus: 0,
+              pension: 0,
+              other: 0,
+            },
+          },
+        },
+      }),
+    )[0]!;
+
+    expect(withoutSpouse.income.spouseSalary).toBe(0);
+    expect(withSpouse.income.spouseSalary).toBeCloseTo(400, 6);
+    // 配偶者の手取りが加算され、net が増える。
+    expect(withSpouse.income.net).toBeGreaterThan(withoutSpouse.income.net);
+    // 配偶者の額面(400)より手取り増分は小さい(税・社会保険料が引かれる)。
+    expect(withSpouse.income.net - withoutSpouse.income.net).toBeLessThan(400);
+  });
+
+  it('配偶者の昇給率が配偶者年齢基準で複利適用される', () => {
+    const result = runSimulation(
+      baseInput({
+        income: { workPeriods: [], retirementBonus: 0, pension: 0, other: 0 }, // 本人は無収入にして配偶者だけ見る
+        family: {
+          children: [],
+          spouse: {
+            age: 40,
+            income: {
+              workPeriods: [workPeriod({ startAge: 40, endAge: 60, income: 300, raiseRate: 5 })],
+              retirementBonus: 0,
+              pension: 0,
+              other: 0,
+            },
+          },
+        },
+      }),
+    );
+    // 本人30歳・配偶者40歳スタート。本人34歳(=配偶者44歳)時点で 300 * 1.05^4。
+    const y = result.find((r) => r.age === 34)!;
+    expect(y.income.spouseSalary).toBeCloseTo(300 * Math.pow(1.05, 4), 6);
+  });
+
+  it('配偶者の退職金が最後の会社員期間の終了翌年に「配偶者退職金」として計上される', () => {
+    const result = runSimulation(
+      baseInput({
+        income: { workPeriods: [], retirementBonus: 0, pension: 0, other: 0 },
+        family: {
+          children: [],
+          spouse: {
+            age: 30,
+            income: {
+              workPeriods: [workPeriod({ startAge: 30, endAge: 60, income: 400, raiseRate: 0 })],
+              retirementBonus: 1000,
+              pension: 0,
+              other: 0,
+            },
+          },
+        },
+      }),
+    );
+    // 配偶者60歳(=本人60歳)まで勤務→翌年61歳で退職金計上。
+    const bonusYear = result.find((r) => r.age === 61)!;
+    expect(bonusYear.events).toContain('配偶者退職金');
+    expect(bonusYear.income.other).toBeGreaterThanOrEqual(1000);
+  });
+
+  it('配偶者控除は配偶者の当年額面収入が103万円超のとき付かず、世帯の税が増える', () => {
+    // 配偶者の額面だけを 103万(控除あり)/ 104万(控除なし)で切り替え、他は同一にする。
+    const inputWithSpouseIncome = (spouseIncome: number): SimulationInput =>
+      baseInput({
+        income: {
+          workPeriods: [workPeriod({ startAge: 30, endAge: 64, income: 600, raiseRate: 0 })],
+          retirementBonus: 0,
+          pension: 0,
+          other: 0,
+        },
+        family: {
+          children: [],
+          spouse: {
+            age: 30,
+            income: {
+              workPeriods: [
+                workPeriod({ startAge: 30, endAge: 64, income: spouseIncome, raiseRate: 0 }),
+              ],
+              retirementBonus: 0,
+              pension: 0,
+              other: 0,
+            },
+          },
+        },
+      });
+
+    const withDeduction = runSimulation(inputWithSpouseIncome(103))[0]!; // <=103: 配偶者控除あり
+    const withoutDeduction = runSimulation(inputWithSpouseIncome(104))[0]!; // >103: 配偶者控除なし
+
+    const totalTax = (r: typeof withDeduction) => r.tax.incomeTax + r.tax.residentTax;
+    // 配偶者控除が外れる分だけ本人の課税所得が増え、世帯の所得税+住民税合計が大きくなる。
+    expect(totalTax(withoutDeduction)).toBeGreaterThan(totalTax(withDeduction));
+  });
+
+  it('配偶者の年金が配偶者の就労終了翌年から受給される', () => {
+    const result = runSimulation(
+      baseInput({
+        basic: { currentAge: 30, endAge: 90, savings: 500 },
+        income: { workPeriods: [], retirementBonus: 0, pension: 0, other: 0 },
+        family: {
+          children: [],
+          spouse: {
+            age: 30,
+            income: {
+              workPeriods: [workPeriod({ startAge: 30, endAge: 60, income: 400, raiseRate: 0 })],
+              retirementBonus: 0,
+              pension: 200,
+              other: 0,
+            },
+          },
+        },
+      }),
+    );
+    // 配偶者は60歳まで就労→61歳から年金。60歳時点では年金0、61歳で年金>0。
+    const at60 = result.find((r) => r.age === 60)!;
+    const at61 = result.find((r) => r.age === 61)!;
+    expect(at60.income.pension).toBe(0);
+    expect(at61.income.pension).toBeGreaterThan(0);
+  });
+});
