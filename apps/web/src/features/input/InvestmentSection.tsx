@@ -189,11 +189,9 @@ function AccountFields({
           label="取得価額(簿価)"
           value={account.acquisitionCost ?? account.initialHolding}
           onChange={(v) =>
-            // 時価と同額なら acquisitionCost を保持せず undefined に戻す(=時価を簿価とみなす簡易化)。
-            onChange({
-              ...account,
-              acquisitionCost: v === account.initialHolding ? undefined : v,
-            })
+            // 入力された値はそのまま簿価として保持する(#68)。時価と同額でも undefined に戻さないため、
+            // あとから時価を変更しても簿価は追従せず、意図せず上書きされない。
+            onChange({ ...account, acquisitionCost: v })
           }
           min={0}
           step={0.1}
