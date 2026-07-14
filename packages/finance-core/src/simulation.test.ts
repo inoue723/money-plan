@@ -58,6 +58,7 @@ const baseInput = (overrides: Partial<SimulationInput> = {}): SimulationInput =>
       {
         name: 'NISA',
         accountType: 'nisa',
+        owner: 'self',
         initialHolding: 0,
         monthlyAmount: 0,
         annualReturn: 3.0,
@@ -444,6 +445,7 @@ describe('runSimulation', () => {
             {
               name: 'NISA',
               accountType: 'nisa',
+              owner: 'self',
               initialHolding: 0,
               monthlyAmount: 5,
               annualReturn: 5.0,
@@ -473,6 +475,7 @@ describe('runSimulation', () => {
             {
               name: '特定口座',
               accountType: 'taxable',
+              owner: 'self',
               initialHolding: 500,
               monthlyAmount: 0,
               annualReturn: 5.0,
@@ -505,6 +508,7 @@ describe('runSimulation', () => {
             {
               name: 'NISA',
               accountType: 'nisa',
+              owner: 'self',
               initialHolding: 0,
               monthlyAmount: 40,
               annualReturn: 0,

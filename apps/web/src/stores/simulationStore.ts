@@ -28,12 +28,14 @@
  *   (v1: `{ input, plans }` → v2: `{ input, tabs, activeTabId }`、
  *    v2 → v3: `basic.investments` を廃止し投資枠ごとの `initialHolding` へ移行し、
  *    名前が「家賃」の ExpenseItem を家賃専用型 `expense.rent` へ変換、
- *    v3 → v4: `spouse.income`(固定年収)を本人と同等の `IncomeInput` 構造へ変換(#49))。
+ *    v3 → v4: `spouse.income`(固定年収)を本人と同等の `IncomeInput` 構造へ変換(#49)し、
+ *    投資枠に名義 `owner` を追加して既存枠はすべて `'self'`(本人)とする(#52))。
  */
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { runSimulation } from '@money-plan/finance-core';
 import type {
+  AccountOwner,
   BasicInput,
   ExpenseInput,
   FamilyInput,
@@ -109,6 +111,7 @@ export const DEFAULT_INPUT: SimulationInput = {
       {
         name: 'NISA',
         accountType: 'nisa', // NISA 利用(非課税枠内の運用益を非課税)
+        owner: 'self', // 名義。デフォルトは本人(#52)
         initialHolding: 0, // 現在投資額(初期保有額・万円)。デフォルト 0
         monthlyAmount: 0, // SPEC.md 2.2 デフォルト 0
         annualReturn: 3.0, // SPEC.md 2.2 デフォルト 3.0%
@@ -249,6 +252,25 @@ const migrateSpouseIncome = (input: SimulationInput): SimulationInput => {
   };
   return { ...input, family: { ...input.family, spouse: { age: spouse.age, income } } };
 };
+
+/**
+ * v3 → v4 の入力マイグレーション(#52)。投資枠に名義(owner)を追加する。
+ * 既存枠はすべて本人名義(`'self'`)とする。既に owner を持つ枠はそのまま維持する。
+ */
+const migrateAddOwner = (input: SimulationInput): SimulationInput => ({
+  ...input,
+  investment: {
+    ...input.investment,
+    accounts: input.investment.accounts.map((a) => {
+      const owner = (a as { owner?: AccountOwner }).owner;
+      return { ...a, owner: owner === 'spouse' ? 'spouse' : 'self' };
+    }),
+  },
+});
+
+/** v3 → v4 の入力マイグレーションを両方(#49 / #52)適用する。両者は別フィールドを扱うため共存できる。 */
+const migrateInputV3toV4 = (input: SimulationInput): SimulationInput =>
+  migrateAddOwner(migrateSpouseIncome(input));
 
 /** タブの一意 ID を採番する。 */
 const createPlanId = (): string =>
@@ -503,14 +525,15 @@ export const useSimulationStore = create<SimulationState>()(
         }
 
         if (version < 4) {
-          // v3 → v4: 配偶者の固定年収(number)を本人と同等の IncomeInput 構造へ変換する(#49)。
+          // v3 → v4: 配偶者の固定年収 → IncomeInput 変換(#49)と投資枠への名義 owner 付与(#52)を
+          // まとめて適用する。両者は別フィールドを扱うため共存できる。
           data = {
             ...data,
-            input: migrateSpouseIncome(data.input),
+            input: migrateInputV3toV4(data.input),
             tabs: data.tabs.map((t) => ({
               ...t,
-              savedInput: migrateSpouseIncome(t.savedInput),
-              draftInput: migrateSpouseIncome(t.draftInput),
+              savedInput: migrateInputV3toV4(t.savedInput),
+              draftInput: migrateInputV3toV4(t.draftInput),
             })),
           };
         }

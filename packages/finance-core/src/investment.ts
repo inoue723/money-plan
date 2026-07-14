@@ -24,12 +24,14 @@
  *   運用益課税 = 課税対象益 × 20.315%
  * 含み損(評価額 < 簿価)の場合は課税対象益を 0 とする(簡易モデルのため損益通算・繰越は扱わない)。
  *
- * ## NISA 投資上限(生涯 1800 万・年間 360 万)
- * NISA 枠(accountType === 'nisa')の投資元本(簿価)の累計を全 NISA 枠合算で追跡し、
- * 以下を超える積立は行わない(超過分は投資せず預金に残す = 積立額を減らすだけで、
- * 課税口座への自動振替はしない):
+ * ## NISA 投資上限(生涯 1800 万・年間 360 万、名義ごとに独立適用。#52)
+ * NISA 枠(accountType === 'nisa')の投資元本(簿価)の累計を追跡し、以下を超える積立は
+ * 行わない(超過分は投資せず預金に残す = 積立額を減らすだけで、課税口座への自動振替はしない):
  *   - 生涯投資枠: NISA_LIFETIME_LIMIT(1800 万、簿価ベース、増加のみ・取崩で復活しない)
- *   - 年間投資枠: NISA_ANNUAL_LIMIT(360 万、全 NISA 枠合算・その年の投資額)
+ *   - 年間投資枠: NISA_ANNUAL_LIMIT(360 万、その年の投資額)
+ * NISA は 1 人 1 口座の制度のため、上限は**名義(owner)ごとに独立**して適用する
+ * (本人の枠と配偶者の枠はそれぞれ別々に 1800 万・360 万を持つ)。同じ名義の複数 NISA 枠は
+ * その名義の枠内で合算し、リストの順に残余を消費する。
  * 取り崩し(売却)による生涯枠の復活は本 issue の対象外のため、生涯簿価累計は減少させない。
  *
  * ## 初期保有額(InvestmentAccount.initialHolding)の扱い
@@ -38,12 +40,26 @@
  * NISA 枠の初期保有額は簿価とみなし、NISA 生涯投資枠(1800 万)の消費対象に**含める**
  * (#46 での変更点。従来は上限判定の対象外だった)。年間投資枠(360 万)は「その年の新規
  * 積立額」に対する制約のため、起点で保有済みの初期保有額は年間枠を消費しない。
- * ※ 初期保有額の生涯枠消費は口座種別のみで分岐する素直な構造とし、後続 #52(配偶者 NISA 枠を
- *   名義別に管理)で名義ごとの生涯枠へ拡張できるようにしておく。
+ * 生涯枠の消費は名義(owner)ごとに独立して判定する(#52)。
  */
 
 import { CAPITAL_GAINS_TAX_RATE, NISA_ANNUAL_LIMIT, NISA_LIFETIME_LIMIT } from './constants';
-import type { InvestmentAccount, InvestmentInput } from './types';
+import type { AccountOwner, InvestmentAccount, InvestmentInput } from './types';
+
+/** 名義の全リスト(名義ごとの集計・反復に使う内部定数)。 */
+const ACCOUNT_OWNERS: readonly AccountOwner[] = ['self', 'spouse'];
+
+/** 名義ごとの数値マップ(NISA 生涯枠の名義別追跡に使う)。 */
+export type OwnerAmounts = Record<AccountOwner, number>;
+
+/** すべての名義を 0 で初期化した名義別マップを作る。 */
+const emptyOwnerAmounts = (): OwnerAmounts => ({ self: 0, spouse: 0 });
+
+/**
+ * 枠の名義を安全に取り出す。owner 未設定(旧データ等)は 'self' とみなす(デフォルト 'self')。
+ */
+const ownerOf = (account: InvestmentAccount): AccountOwner =>
+  account.owner === 'spouse' ? 'spouse' : 'self';
 
 /** 1 つの投資枠の運用state(年をまたいで持ち越す最小限の情報)。 */
 export interface AccountState {
@@ -61,10 +77,11 @@ export interface InvestmentState {
   /** 各投資枠の運用state(input.accounts と同じ順序・同じ長さ)。 */
   accounts: AccountState[];
   /**
-   * 全 NISA 枠合算の簿価投入累計(万円)。NISA 生涯投資枠(1800 万)の判定に使う。
-   * 取り崩しによる枠復活は本 issue の対象外のため、この値は増加のみで減少しない。
+   * 名義ごとの NISA 簿価投入累計(万円)。NISA 生涯投資枠(1800 万)の判定に使う(#52)。
+   * NISA は 1 人 1 口座のため名義別に独立して追跡する。取り崩しによる枠復活は本 issue の
+   * 対象外のため、各値は増加のみで減少しない。
    */
-  nisaLifetimeCostBasis: number;
+  nisaLifetimeCostBasis: OwnerAmounts;
 }
 
 /** 1ステップ計算の当年パラメータ。 */
@@ -118,21 +135,25 @@ interface AccountStepResult {
 const emptyAccountState = (): AccountState => ({ value: 0, costBasis: 0 });
 
 /**
- * 起点時点で NISA 生涯枠が初期保有額により既に消費されている額(全 NISA 枠合算・簿価ベース)。
+ * 起点時点で NISA 生涯枠が初期保有額により既に消費されている額を**名義ごと**に求める(#52)。
  * NISA 枠の初期保有額は簿価とみなし、生涯枠(1800 万)の消費対象に含める(#46)。
- * 口座種別のみで分岐する素直な構造とし、後続 #52 で名義別の生涯枠へ拡張しやすくしておく。
+ * NISA は 1 人 1 口座のため、名義(owner)ごとに独立して集計する。
  */
-export const nisaInitialLifetimeUsage = (accounts: InvestmentAccount[]): number =>
-  accounts.reduce(
-    (sum, a) => (a.accountType === 'nisa' ? sum + Math.max(0, a.initialHolding) : sum),
-    0,
-  );
+export const nisaInitialLifetimeUsage = (accounts: InvestmentAccount[]): OwnerAmounts => {
+  const usage = emptyOwnerAmounts();
+  for (const a of accounts) {
+    if (a.accountType === 'nisa') {
+      usage[ownerOf(a)] += Math.max(0, a.initialHolding);
+    }
+  }
+  return usage;
+};
 
 /**
  * 初期投資stateを生成する。
  * 各投資枠の初期保有額(InvestmentAccount.initialHolding)を、含み益が不明なため全額を簿価
  * として扱い、その枠の初期評価額・簿価に組み入れる(モジュール冒頭の方針を参照)。
- * NISA 枠の初期保有額は簿価として生涯枠を消費するため、生涯簿価累計の初期値に加算する。
+ * NISA 枠の初期保有額は簿価として生涯枠を消費するため、名義ごとに生涯簿価累計の初期値へ加算する。
  */
 export const initInvestmentState = (accounts: InvestmentAccount[]): InvestmentState => {
   const accountStates: AccountState[] = accounts.map((a) => {
@@ -208,8 +229,9 @@ const stepAccount = (prev: AccountState, params: AccountStepParams): AccountStep
 /**
  * 全投資枠を 1 年分更新する純粋関数。
  *
- * 各枠を独立に運用しつつ、NISA 枠には全 NISA 枠合算の投資上限(生涯 1800 万・年間 360 万)を
- * 適用する。NISA 枠はリストの順に上限の残余を消費し、上限に達した枠の超過分は積み立てず預金に残す。
+ * 各枠を独立に運用しつつ、NISA 枠には投資上限(生涯 1800 万・年間 360 万)を**名義ごとに**
+ * 独立適用する(#52)。同じ名義の NISA 枠はリストの順にその名義の残余を消費し、上限に達した枠の
+ * 超過分は積み立てず預金に残す。本人の枠と配偶者の枠はそれぞれ別々の上限を持つ。
  */
 export const stepInvestment = (
   prev: InvestmentState,
@@ -218,9 +240,16 @@ export const stepInvestment = (
   const { age, investment } = params;
   const accounts = investment.accounts;
 
-  // NISA 上限の残余(全 NISA 枠合算)。年間枠は毎年リセット、生涯枠は簿価累計から算出。
-  let annualNisaRemaining = NISA_ANNUAL_LIMIT;
-  let lifetimeNisaRemaining = Math.max(0, NISA_LIFETIME_LIMIT - prev.nisaLifetimeCostBasis);
+  // NISA 上限の残余を名義ごとに保持する。年間枠は毎年リセット、生涯枠は名義別の簿価累計から算出。
+  const annualNisaRemaining: OwnerAmounts = emptyOwnerAmounts();
+  const lifetimeNisaRemaining: OwnerAmounts = emptyOwnerAmounts();
+  for (const owner of ACCOUNT_OWNERS) {
+    annualNisaRemaining[owner] = NISA_ANNUAL_LIMIT;
+    lifetimeNisaRemaining[owner] = Math.max(
+      0,
+      NISA_LIFETIME_LIMIT - prev.nisaLifetimeCostBasis[owner],
+    );
+  }
 
   const newAccountStates: AccountState[] = [];
   let totalGain = 0;
@@ -229,23 +258,24 @@ export const stepInvestment = (
   let totalWithdrawal = 0;
   let totalTax = 0;
   let totalValue = 0;
-  let nisaContributedThisYear = 0;
+  const nisaContributedThisYear: OwnerAmounts = emptyOwnerAmounts();
 
   accounts.forEach((account, idx) => {
     const prevAccount = prev.accounts[idx] ?? emptyAccountState();
     const isNisa = account.accountType === 'nisa';
+    const owner = ownerOf(account);
 
-    // NISA 枠は年間・生涯の残余のうち小さい方まで、課税枠は無制限。
+    // NISA 枠は当該名義の年間・生涯の残余のうち小さい方まで、課税枠は無制限。
     const contributionCap = isNisa
-      ? Math.max(0, Math.min(annualNisaRemaining, lifetimeNisaRemaining))
+      ? Math.max(0, Math.min(annualNisaRemaining[owner], lifetimeNisaRemaining[owner]))
       : Number.POSITIVE_INFINITY;
 
     const step = stepAccount(prevAccount, { account, age, contributionCap });
 
     if (isNisa) {
-      annualNisaRemaining -= step.contribution;
-      lifetimeNisaRemaining -= step.contribution;
-      nisaContributedThisYear += step.contribution;
+      annualNisaRemaining[owner] -= step.contribution;
+      lifetimeNisaRemaining[owner] -= step.contribution;
+      nisaContributedThisYear[owner] += step.contribution;
     }
 
     newAccountStates.push(step.state);
@@ -257,10 +287,16 @@ export const stepInvestment = (
     totalValue += step.state.value;
   });
 
+  const nextLifetimeCostBasis = emptyOwnerAmounts();
+  for (const owner of ACCOUNT_OWNERS) {
+    nextLifetimeCostBasis[owner] =
+      prev.nisaLifetimeCostBasis[owner] + nisaContributedThisYear[owner];
+  }
+
   return {
     state: {
       accounts: newAccountStates,
-      nisaLifetimeCostBasis: prev.nisaLifetimeCostBasis + nisaContributedThisYear,
+      nisaLifetimeCostBasis: nextLifetimeCostBasis,
     },
     gain: totalGain,
     contribution: totalContribution,

@@ -274,9 +274,6 @@ export function runSimulation(input: SimulationInput): SimulationResult {
     const allChildAges = children.map((c) => c.baseAge + i);
     const childAgesThisYear = allChildAges.filter((childAge) => childAge >= 0);
 
-    // 配偶者の当年年齢(起点年齢 + 経過年数)。配偶者なしなら undefined。
-    const spouseAge = family.spouse ? family.spouse.age + i : undefined;
-
     // 将来生まれる子がこの年に誕生する場合はイベント名として記録する(i=0 の既存の子は除く)。
     if (i > 0 && children.some((c) => c.baseAge + i === 0)) {
       eventNames.push('子ども誕生');

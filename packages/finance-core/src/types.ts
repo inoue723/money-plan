@@ -253,6 +253,13 @@ export interface WithdrawalSetting {
 export type AccountType = 'nisa' | 'taxable';
 
 /**
+ * 投資枠の名義(#52)。'self' は本人、'spouse' は配偶者。
+ * NISA の生涯投資枠(1800 万)・年間投資枠(360 万)は 1 人 1 口座の制度のため、
+ * 名義ごとに独立して上限を適用する(本人と配偶者の枠は別々に上限を持つ)。
+ */
+export type AccountOwner = 'self' | 'spouse';
+
+/**
  * F-05 投資枠(1 つの口座設定)。
  * 積立額・利回り・積立終了年齢・取り崩し設定を枠ごとに独立して持ち、独立に運用する。
  */
@@ -261,6 +268,11 @@ export interface InvestmentAccount {
   name: string;
   /** 口座種別。'nisa' は非課税(上限あり)、'taxable' は取崩時に運用益へ課税。 */
   accountType: AccountType;
+  /**
+   * 名義(#52)。デフォルト 'self'(本人)。NISA 枠の生涯・年間投資枠は名義ごとに独立適用する。
+   * 課税口座にも名義は持つが、計算上の差は当面なし(表示・整理用)。
+   */
+  owner: AccountOwner;
   /**
    * 現在投資額(初期保有額・万円)。この枠がシミュレーション起点で既に保有している評価額。
    * デフォルト 0。含み益が不明なため全額を簿価(取得原価)とみなす簡易化を行う。
