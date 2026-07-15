@@ -11,10 +11,10 @@
  * - ルートを `h-screen overflow-hidden` でビューポート高に固定し、ページ全体は
  *   スクロールさせない。ヘッダー・PlanTabs・DisclaimerBanner は固定高。
  * - 中央の入力/結果行に `min-h-0` を与え、残り高さを占めさせる。左 <aside>(入力)と
- *   右 <main>(結果)がそれぞれ独立したスクロール領域になる。
+ *   右 <main>(結果)がそれぞれ独立した縦スクロール領域になる(各自 overflow-y-auto)。
  *   → 結果を下にスクロールした状態のまま、左の入力値を変えて変化を見られる。
- * - <main> は `overflow-auto`(縦横)。CF表(#87 で入れ子スクロールを撤去)の横スクロールも
- *   この結果パネルが担うため、CF表の sticky ヘッダー・左端列は結果パネルのスクロールに追従する。
+ * - CF表(features/result/CashflowTableSection)は自前の縦横スクロール box を持つため、
+ *   結果パネル自体は横スクロールを担わない(横幅は表の box 内で完結する)。
  */
 import { InputPanel } from './features/input/InputPanel';
 import { ResultPanel } from './features/result/ResultPanel';
@@ -39,7 +39,7 @@ export function App() {
           <InputPanel />
         </aside>
 
-        <main className="flex-1 overflow-auto p-6">
+        <main className="flex-1 overflow-y-auto p-6">
           {/* スロット合成: 結果領域(#10 グラフ / #11 年次内訳) */}
           <ResultPanel />
         </main>
