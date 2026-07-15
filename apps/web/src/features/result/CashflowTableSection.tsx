@@ -71,7 +71,7 @@ export function CashflowTableSection() {
           result={result}
           selectedYear={selectedYear}
           setSelectedYear={setSelectedYear}
-          containerClassName="max-h-[32rem]"
+          containerClassName="overflow-visible"
         />
       ) : (
         <div className="flex h-24 items-center justify-center rounded-md bg-slate-50 text-sm text-slate-400">
@@ -110,7 +110,7 @@ export function CashflowTableSection() {
             result={result}
             selectedYear={selectedYear}
             setSelectedYear={setSelectedYear}
-            containerClassName="min-h-0 flex-1"
+            containerClassName="min-h-0 flex-1 overflow-auto rounded-md border border-slate-200"
           />
         </div>
       )}
@@ -120,7 +120,11 @@ export function CashflowTableSection() {
 
 /**
  * CF表のテーブル本体(スクロールコンテナ + `<table>`)。通常表示と全画面表示で共用する。
- * 高さ制限はコンテナに与えるクラス(`containerClassName`)で呼び出し側が決める。
+ * overflow / 枠線 / 高さ制限はコンテナに与えるクラス(`containerClassName`)で呼び出し側が決める(#87)。
+ * - 通常表示: `overflow-visible`(自前のスクロールを持たない)。縦横とも結果パネル(main)の
+ *   スクロールに委ねる。これにより sticky ヘッダー(西暦・年齢)と左端の項目名列は、
+ *   スクロール祖先である結果パネルに対して固定され、結果パネルを下/右にスクロールしても追従する。
+ * - 全画面表示: `min-h-0 flex-1 overflow-auto rounded-md border ...`(オーバーレイ内で縦横スクロール)。
  */
 function CashflowTable({
   result,
@@ -141,7 +145,7 @@ function CashflowTable({
   const ageHeaderRows = buildAgeHeaderRows(result);
 
   return (
-    <div className={`overflow-auto rounded-md border border-slate-200 ${containerClassName}`}>
+    <div className={containerClassName}>
       <table className="border-collapse text-sm">
         <caption className="sr-only">
           全期間({result[0]?.year}年〜{result[result.length - 1]?.year}

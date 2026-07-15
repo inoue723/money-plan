@@ -6,6 +6,15 @@
  * - 右メイン       = 結果領域        → <ResultPanel/>(内部で #10 / #11 のセクションを合成)
  * - 下部           = 免責 + プライバシー(SPEC.md 1.4 / 4.1)
  * - 対象は PC のみ。最小画面幅 1280px(SPEC.md 3.2 / 5、min-width は index.css で確保)。
+ *
+ * スクロール方針(#87):
+ * - ルートを `h-screen overflow-hidden` でビューポート高に固定し、ページ全体は
+ *   スクロールさせない。ヘッダー・PlanTabs・DisclaimerBanner は固定高。
+ * - 中央の入力/結果行に `min-h-0` を与え、残り高さを占めさせる。左 <aside>(入力)と
+ *   右 <main>(結果)がそれぞれ独立したスクロール領域になる。
+ *   → 結果を下にスクロールした状態のまま、左の入力値を変えて変化を見られる。
+ * - <main> は `overflow-auto`(縦横)。CF表(#87 で入れ子スクロールを撤去)の横スクロールも
+ *   この結果パネルが担うため、CF表の sticky ヘッダー・左端列は結果パネルのスクロールに追従する。
  */
 import { InputPanel } from './features/input/InputPanel';
 import { ResultPanel } from './features/result/ResultPanel';
@@ -15,7 +24,7 @@ import { ToastViewport } from './components/Toast';
 
 export function App() {
   return (
-    <div className="flex min-h-screen flex-col bg-slate-100 text-slate-900">
+    <div className="flex h-screen flex-col overflow-hidden bg-slate-100 text-slate-900">
       <header className="border-b border-slate-200 bg-white px-6 py-3">
         <h1 className="text-xl font-bold">資産推移シミュレーション</h1>
       </header>
@@ -24,13 +33,13 @@ export function App() {
       <PlanTabs />
 
       {/* S-01: 左=入力サイドパネル / 右=結果メイン */}
-      <div className="flex flex-1 items-stretch">
+      <div className="flex min-h-0 flex-1 items-stretch">
         <aside className="w-96 shrink-0 overflow-y-auto border-r border-slate-200 bg-white p-6">
           {/* スロット: 入力フォーム(#9) */}
           <InputPanel />
         </aside>
 
-        <main className="flex-1 overflow-y-auto p-6">
+        <main className="flex-1 overflow-auto p-6">
           {/* スロット合成: 結果領域(#10 グラフ / #11 年次内訳) */}
           <ResultPanel />
         </main>
