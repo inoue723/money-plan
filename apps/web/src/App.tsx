@@ -11,6 +11,7 @@ import { InputPanel } from './features/input/InputPanel';
 import { ResultPanel } from './features/result/ResultPanel';
 import { PlanTabs } from './features/plan/PlanTabs';
 import { DisclaimerBanner } from './components/DisclaimerBanner';
+import { ToastViewport } from './components/Toast';
 
 export function App() {
   return (
@@ -36,6 +37,9 @@ export function App() {
       </div>
 
       <DisclaimerBanner />
+
+      {/* トースト通知(#65。画面状態によらず表示できるようルート直下に置く) */}
+      <ToastViewport />
     </div>
   );
 }
