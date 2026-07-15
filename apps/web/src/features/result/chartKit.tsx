@@ -29,6 +29,7 @@ interface AxisTickLike {
 /** グラフ全体で共有する色(Tailwind slate/blue 等に対応)。 */
 export const COLORS = {
   savings: '#3b82f6', // 現預金残高の折れ線(blue-500)
+  investment: '#10b981', // 投資資産評価額の棒(emerald-500)
   negative: '#ef4444', // 警告色: 残高マイナス年(red-500)
   selected: '#f59e0b', // 選択中の年のハイライト(amber-500)
   axis: '#cbd5e1', // 軸線(slate-300)
