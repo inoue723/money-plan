@@ -6,7 +6,7 @@
  * ※将来生まれる子どもは基本情報(F-01)の家族構成で登録する(#32)。
  */
 import type { LifeEvent, LifeEventType } from '@money-plan/finance-core';
-import { useSimulationStore } from '../../stores/simulationStore';
+import { isArrayItemDirty, useSavedInput, useSimulationStore } from '../../stores/simulationStore';
 import { NumberField } from '../../components/NumberField';
 import { SelectField } from '../../components/SelectField';
 
@@ -35,6 +35,8 @@ export function EventsSection() {
   const events = useSimulationStore((s) => s.input.events);
   const currentAge = useSimulationStore((s) => s.input.basic.currentAge);
   const setEvents = useSimulationStore((s) => s.setEvents);
+  // 保存済みのイベント(アイテム単位の未保存ハイライト用。#74)。
+  const savedEvents = useSavedInput()?.events;
 
   const updateEvent = (index: number, next: LifeEvent) => {
     setEvents(events.map((e, i) => (i === index ? next : e)));
@@ -51,7 +53,12 @@ export function EventsSection() {
       )}
 
       {events.map((event, i) => (
-        <div key={i} className="rounded-md border border-slate-200 p-2">
+        <div
+          key={i}
+          className={`rounded-md border p-2 ${
+            isArrayItemDirty(event, savedEvents, i) ? 'border-sky-400' : 'border-slate-200'
+          }`}
+        >
           <div className="mb-2 flex items-end gap-2">
             <div className="flex-1">
               <SelectField

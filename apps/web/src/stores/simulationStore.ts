@@ -332,6 +332,49 @@ const createPlanId = (): string =>
 export const isTabDirty = (tab: PlanTab): boolean =>
   JSON.stringify(tab.draftInput) !== JSON.stringify(tab.savedInput);
 
+/** 入力のトップレベルのグループキー(未保存ハイライトの単位。#74)。 */
+export type SectionKey = 'basic' | 'family' | 'income' | 'expense' | 'events' | 'investment';
+
+/** グループキーの一覧(比較順)。 */
+const SECTION_KEYS: SectionKey[] = [
+  'basic',
+  'family',
+  'income',
+  'expense',
+  'events',
+  'investment',
+];
+
+/**
+ * ドラフトと保存済みスナップショットを比較し、値が異なるグループキーの集合を返す(#74)。
+ * 比較は `isTabDirty` と同様の `JSON.stringify` ベース。saved が無ければ空集合。
+ */
+const computeDirtySections = (
+  draft: SimulationInput,
+  saved: SimulationInput | undefined,
+): Set<SectionKey> => {
+  const dirty = new Set<SectionKey>();
+  if (!saved) return dirty;
+  for (const key of SECTION_KEYS) {
+    if (JSON.stringify(draft[key]) !== JSON.stringify(saved[key])) dirty.add(key);
+  }
+  return dirty;
+};
+
+/**
+ * 配列アイテム(支出項目・働き方期間・投資枠・イベント・子ども等)が未保存変更ありかを
+ * 判定する純粋関数(#74)。saved 側に同一インデックスが無い(新規追加)場合は「変更あり」とする。
+ * 削除はアイテム自体が消えるためグループ単位のハイライトでカバーする。
+ */
+export const isArrayItemDirty = <T>(
+  draftItem: T,
+  savedItems: readonly T[] | undefined,
+  index: number,
+): boolean => {
+  if (!savedItems || index >= savedItems.length) return true;
+  return JSON.stringify(draftItem) !== JSON.stringify(savedItems[index]);
+};
+
 /** 新規タブを作る。保存/ドラフトともに `input` の独立コピー(= 生成直後は未保存でない)。 */
 const makeTab = (name: string, input: SimulationInput = DEFAULT_INPUT): PlanTab => ({
   id: createPlanId(),
@@ -638,3 +681,41 @@ const selectResult = (state: SimulationState): SimulationResult => {
  * 後続チケット(#10 グラフ / #11 年次内訳)は本フックを唯一の結果入口として使う。
  */
 export const useSimulationResult = (): SimulationResult => useSimulationStore(selectResult);
+
+// ---------------------------------------------------------------------------
+// 未保存変更のハイライト用セレクタ(#74)
+// ---------------------------------------------------------------------------
+
+/** アクティブタブの保存済みスナップショット(savedInput)。アイテム単位の差分比較に使う。 */
+const selectActiveSavedInput = (state: SimulationState): SimulationInput | undefined =>
+  state.tabs.find((t) => t.id === state.activeTabId)?.savedInput;
+
+/**
+ * アクティブタブの保存済み入力を購読するフック(#74)。
+ * 各入力セクションはこれと `isArrayItemDirty` でアイテム単位の未保存ハイライトを判定する。
+ * `savedInput` の参照は保存/破棄/タブ切替時のみ変わるため、購読は安定する。
+ */
+export const useSavedInput = (): SimulationInput | undefined =>
+  useSimulationStore(selectActiveSavedInput);
+
+// draft(input)と saved の参照が変わらなければ同じ Set を返し、購読側の再描画を抑える(メモ化)。
+let cachedDirtyDraft: SimulationInput | null = null;
+let cachedDirtySaved: SimulationInput | undefined;
+let cachedDirtySections: Set<SectionKey> = new Set();
+
+const selectDirtySections = (state: SimulationState): Set<SectionKey> => {
+  const saved = selectActiveSavedInput(state);
+  if (state.input === cachedDirtyDraft && saved === cachedDirtySaved) {
+    return cachedDirtySections;
+  }
+  cachedDirtyDraft = state.input;
+  cachedDirtySaved = saved;
+  cachedDirtySections = computeDirtySections(state.input, saved);
+  return cachedDirtySections;
+};
+
+/**
+ * 未保存変更のあるグループキーの集合を購読するフック(#74)。
+ * `InputPanel` のアコーディオンヘッダのマーカー表示に使う。
+ */
+export const useDirtySections = (): Set<SectionKey> => useSimulationStore(selectDirtySections);
