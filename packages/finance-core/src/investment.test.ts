@@ -14,6 +14,7 @@ const makeAccount = (overrides: Partial<InvestmentAccount> = {}): InvestmentAcco
   annualReturn: 0,
   startAge: 30,
   endAge: 65,
+  withdrawals: [],
   ...overrides,
 });
 
@@ -84,7 +85,12 @@ describe('initInvestmentState', () => {
 
     it('名義ごとに簿価ベースで生涯枠消費を独立集計する', () => {
       const state = initInvestmentState([
-        makeAccount({ accountType: 'nisa', owner: 'self', initialHolding: 500, acquisitionCost: 400 }),
+        makeAccount({
+          accountType: 'nisa',
+          owner: 'self',
+          initialHolding: 500,
+          acquisitionCost: 400,
+        }),
         makeAccount({
           accountType: 'nisa',
           owner: 'spouse',
@@ -200,7 +206,7 @@ describe('stepInvestment - 取り崩し(課税口座)', () => {
     const investment = oneAccount({
       annualReturn: 0,
       accountType: 'taxable',
-      withdrawal: { startAge: 65, annualAmount: 100 },
+      withdrawals: [{ type: 'lumpSum', age: 70, amount: 100 }],
     });
 
     const result = stepInvestment(prev, { age: 70, investment });
@@ -218,7 +224,9 @@ describe('stepInvestment - 取り崩し(課税口座)', () => {
       accounts: [{ value: 1000, costBasis: 600 }],
       nisaLifetimeCostBasis: { self: 0, spouse: 0 },
     };
-    const investment = oneAccount({ withdrawal: { startAge: 65, annualAmount: 100 } });
+    const investment = oneAccount({
+      withdrawals: [{ type: 'spread', startAge: 65, endAge: 85 }],
+    });
 
     const result = stepInvestment(prev, { age: 60, investment });
 
@@ -234,7 +242,7 @@ describe('stepInvestment - 取り崩し(課税口座)', () => {
     };
     const investment = oneAccount({
       accountType: 'taxable',
-      withdrawal: { startAge: 65, annualAmount: 100 },
+      withdrawals: [{ type: 'lumpSum', age: 70, amount: 100 }],
     });
 
     const result = stepInvestment(prev, { age: 70, investment });
@@ -252,7 +260,7 @@ describe('stepInvestment - 取り崩し(課税口座)', () => {
     };
     const investment = oneAccount({
       accountType: 'taxable',
-      withdrawal: { startAge: 65, annualAmount: 100 },
+      withdrawals: [{ type: 'lumpSum', age: 70, amount: 100 }],
     });
 
     const result = stepInvestment(prev, { age: 70, investment });
@@ -270,7 +278,7 @@ describe('stepInvestment - 取り崩し(NISA)', () => {
     };
     const investment = oneAccount({
       accountType: 'nisa',
-      withdrawal: { startAge: 65, annualAmount: 100 },
+      withdrawals: [{ type: 'lumpSum', age: 70, amount: 100 }],
     });
 
     const result = stepInvestment(prev, { age: 70, investment });
@@ -278,6 +286,333 @@ describe('stepInvestment - 取り崩し(NISA)', () => {
     expect(result.withdrawal).toBe(100);
     expect(result.tax).toBe(0);
     expect(result.investmentValue).toBeCloseTo(900, 10);
+  });
+});
+
+describe('stepInvestment - 分割取崩(spread。#69)', () => {
+  /** 取崩フェーズだけを見たい枠(積立なし・利回りは指定)。 */
+  const spreadAccount = (
+    startAge: number,
+    endAge: number,
+    overrides: Partial<InvestmentAccount> = {},
+  ): InvestmentInput =>
+    oneAccount({
+      accountType: 'nisa',
+      monthlyAmount: 0,
+      annualReturn: 0,
+      withdrawals: [{ type: 'spread', startAge, endAge }],
+      ...overrides,
+    });
+
+  it('利回り0なら期間中は均等に取り崩し、終了年齢の年末に残高が0になる', () => {
+    // 65〜69 歳の 5 年で 1000 万を取り崩し切る。利回り 0 なので毎年ちょうど 200 万。
+    const investment = spreadAccount(65, 69);
+    let state: InvestmentState = {
+      accounts: [{ value: 1000, costBasis: 1000 }],
+      nisaLifetimeCostBasis: { self: 0, spouse: 0 },
+    };
+
+    const withdrawals: number[] = [];
+    for (let age = 65; age <= 69; age++) {
+      const result = stepInvestment(state, { age, investment });
+      withdrawals.push(result.withdrawal);
+      state = result.state;
+    }
+
+    // 残り年数(endAge − age + 1)は 5,4,3,2,1 と減り、取崩額は毎年 200 万で均等になる。
+    expect(withdrawals).toEqual([200, 200, 200, 200, 200]);
+    // 終了年齢(69)の年末に残高 0。
+    expect(state.accounts[0]!.value).toBeCloseTo(0, 10);
+  });
+
+  it('運用益があっても終了年齢の年末に残高が0になる(残高に応じて取崩額が増減)', () => {
+    // 65〜85 歳の 21 年、利回り 3%。運用益ぶん取崩額は毎年変動するが、期間末には必ず 0 になる。
+    const investment = spreadAccount(65, 85, { annualReturn: 3.0 });
+    let state: InvestmentState = {
+      accounts: [{ value: 3000, costBasis: 3000 }],
+      nisaLifetimeCostBasis: { self: 0, spouse: 0 },
+    };
+
+    let total = 0;
+    for (let age = 65; age <= 85; age++) {
+      const result = stepInvestment(state, { age, investment });
+      expect(result.withdrawal).toBeGreaterThan(0); // 期間中は毎年取り崩す
+      total += result.withdrawal;
+      state = result.state;
+    }
+
+    // 終了年齢の年に残額をすべて取り崩すため、期間末の残高は 0。
+    expect(state.accounts[0]!.value).toBeCloseTo(0, 10);
+    // 運用益ぶん、取崩総額は元の評価額(3000)を上回る。
+    expect(total).toBeGreaterThan(3000);
+  });
+
+  it('開始年齢より前・終了年齢より後は取り崩さない', () => {
+    const investment = spreadAccount(65, 85);
+    const prev: InvestmentState = {
+      accounts: [{ value: 1000, costBasis: 1000 }],
+      nisaLifetimeCostBasis: { self: 0, spouse: 0 },
+    };
+
+    expect(stepInvestment(prev, { age: 64, investment }).withdrawal).toBe(0);
+    expect(stepInvestment(prev, { age: 86, investment }).withdrawal).toBe(0);
+    // 開始年齢ちょうどから取り崩す(1000 / (85 − 65 + 1) = 1000 / 21)。
+    expect(stepInvestment(prev, { age: 65, investment }).withdrawal).toBeCloseTo(1000 / 21, 10);
+  });
+
+  it('開始年齢 = 終了年齢(1年)なら残高を全額取り崩す', () => {
+    const investment = spreadAccount(70, 70);
+    const prev: InvestmentState = {
+      accounts: [{ value: 1000, costBasis: 1000 }],
+      nisaLifetimeCostBasis: { self: 0, spouse: 0 },
+    };
+
+    const result = stepInvestment(prev, { age: 70, investment });
+
+    expect(result.withdrawal).toBe(1000);
+    expect(result.investmentValue).toBeCloseTo(0, 10);
+  });
+
+  it('課税口座の分割取崩は取崩額の評価益部分に課税されつつ、期間末に残高0になる', () => {
+    // 時価 1000 / 簿価 600(含み益 400)。65〜66 歳の 2 年で取り崩し切る。
+    const investment = spreadAccount(65, 66, { accountType: 'taxable' });
+    let state: InvestmentState = {
+      accounts: [{ value: 1000, costBasis: 600 }],
+      nisaLifetimeCostBasis: { self: 0, spouse: 0 },
+    };
+
+    // 1 年目(65 歳): 1000 / 2 = 500 を取り崩す。評価益割合 = (1000 − 600) / 1000 = 0.4。
+    const y1 = stepInvestment(state, { age: 65, investment });
+    expect(y1.withdrawal).toBe(500);
+    expect(y1.tax).toBeCloseTo(500 * 0.4 * CAPITAL_GAINS_TAX_RATE, 10);
+    expect(y1.state.accounts[0]!.value).toBeCloseTo(500, 10);
+    expect(y1.state.accounts[0]!.costBasis).toBeCloseTo(300, 10); // 600 × (1 − 500/1000)
+    state = y1.state;
+
+    // 2 年目(66 歳 = 終了年齢): 残額 500 をすべて取り崩す。評価益割合は 0.4 のまま。
+    const y2 = stepInvestment(state, { age: 66, investment });
+    expect(y2.withdrawal).toBe(500);
+    expect(y2.tax).toBeCloseTo(500 * 0.4 * CAPITAL_GAINS_TAX_RATE, 10);
+    expect(y2.investmentValue).toBeCloseTo(0, 10);
+  });
+});
+
+describe('stepInvestment - 一括取崩(lumpSum。#69)', () => {
+  it('指定した年齢の年にだけ指定額を取り崩す', () => {
+    const investment = oneAccount({
+      accountType: 'nisa',
+      annualReturn: 0,
+      withdrawals: [{ type: 'lumpSum', age: 70, amount: 300 }],
+    });
+    const prev: InvestmentState = {
+      accounts: [{ value: 1000, costBasis: 1000 }],
+      nisaLifetimeCostBasis: { self: 0, spouse: 0 },
+    };
+
+    // 対象年齢の前後では取り崩さない。
+    expect(stepInvestment(prev, { age: 69, investment }).withdrawal).toBe(0);
+    expect(stepInvestment(prev, { age: 71, investment }).withdrawal).toBe(0);
+
+    const result = stepInvestment(prev, { age: 70, investment });
+    expect(result.withdrawal).toBe(300);
+    expect(result.investmentValue).toBeCloseTo(700, 10);
+  });
+
+  it('残高が指定額に満たない場合は残高全額を取り崩す(min(amount, 残高))', () => {
+    const investment = oneAccount({
+      accountType: 'nisa',
+      annualReturn: 0,
+      // 残高(200)を大きく超える額を指定 = 「全額取り崩す」運用。
+      withdrawals: [{ type: 'lumpSum', age: 70, amount: 9999 }],
+    });
+    const prev: InvestmentState = {
+      accounts: [{ value: 200, costBasis: 150 }],
+      nisaLifetimeCostBasis: { self: 0, spouse: 0 },
+    };
+
+    const result = stepInvestment(prev, { age: 70, investment });
+
+    expect(result.withdrawal).toBe(200);
+    expect(result.investmentValue).toBeCloseTo(0, 10);
+  });
+
+  it('課税口座では取崩額の評価益部分に課税される', () => {
+    // 時価 1000 / 簿価 600 → 評価益割合 0.4。300 万取り崩す。
+    const investment = oneAccount({
+      accountType: 'taxable',
+      annualReturn: 0,
+      withdrawals: [{ type: 'lumpSum', age: 70, amount: 300 }],
+    });
+    const prev: InvestmentState = {
+      accounts: [{ value: 1000, costBasis: 600 }],
+      nisaLifetimeCostBasis: { self: 0, spouse: 0 },
+    };
+
+    const result = stepInvestment(prev, { age: 70, investment });
+
+    expect(result.withdrawal).toBe(300);
+    // 課税対象益 = 300 × 0.4 = 120
+    expect(result.tax).toBeCloseTo(120 * CAPITAL_GAINS_TAX_RATE, 10);
+    expect(result.investmentValue).toBeCloseTo(700, 10);
+    expect(result.state.accounts[0]!.costBasis).toBeCloseTo(420, 10); // 600 × (1 − 300/1000)
+  });
+});
+
+describe('stepInvestment - 複数の取り崩し設定(#69)', () => {
+  it('同一年に該当する設定は spread → lumpSum の順に順次適用する', () => {
+    // 分割取崩(65〜69)と一括取崩(65 歳・100 万)が同じ年に該当する。
+    const investment = oneAccount({
+      accountType: 'nisa',
+      annualReturn: 0,
+      withdrawals: [
+        { type: 'spread', startAge: 65, endAge: 69 },
+        { type: 'lumpSum', age: 65, amount: 100 },
+      ],
+    });
+    const prev: InvestmentState = {
+      accounts: [{ value: 1000, costBasis: 1000 }],
+      nisaLifetimeCostBasis: { self: 0, spouse: 0 },
+    };
+
+    const result = stepInvestment(prev, { age: 65, investment });
+
+    // spread が先: 1000 / 5 = 200 → 残高 800。続けて lumpSum 100 → 残高 700。合計 300。
+    // (lumpSum が先だと spread は (1000 − 100) / 5 = 180 になり合計 280 になる)
+    expect(result.withdrawal).toBe(300);
+    expect(result.investmentValue).toBeCloseTo(700, 10);
+  });
+
+  it('定義順が lumpSum 先でも spread から適用される', () => {
+    const investment = oneAccount({
+      accountType: 'nisa',
+      annualReturn: 0,
+      withdrawals: [
+        { type: 'lumpSum', age: 65, amount: 100 },
+        { type: 'spread', startAge: 65, endAge: 69 },
+      ],
+    });
+    const prev: InvestmentState = {
+      accounts: [{ value: 1000, costBasis: 1000 }],
+      nisaLifetimeCostBasis: { self: 0, spouse: 0 },
+    };
+
+    // 定義順によらず spread(200)→ lumpSum(100)の順で適用され、合計 300。
+    expect(stepInvestment(prev, { age: 65, investment }).withdrawal).toBe(300);
+  });
+
+  it('残高が尽きたら以降の設定の取崩額は0になる', () => {
+    const investment = oneAccount({
+      accountType: 'nisa',
+      annualReturn: 0,
+      withdrawals: [
+        { type: 'lumpSum', age: 70, amount: 100 }, // 残高 100 を使い切る
+        { type: 'lumpSum', age: 70, amount: 50 }, // 取り崩せる残高がない
+      ],
+    });
+    const prev: InvestmentState = {
+      accounts: [{ value: 100, costBasis: 100 }],
+      nisaLifetimeCostBasis: { self: 0, spouse: 0 },
+    };
+
+    const result = stepInvestment(prev, { age: 70, investment });
+
+    expect(result.withdrawal).toBe(100);
+    expect(result.investmentValue).toBeCloseTo(0, 10);
+  });
+
+  it('spread 期間が重複しても順次適用でクラッシュせず処理される', () => {
+    // UI 側では警告するが、計算は定義順に順次適用する。
+    const investment = oneAccount({
+      accountType: 'nisa',
+      annualReturn: 0,
+      withdrawals: [
+        { type: 'spread', startAge: 65, endAge: 66 },
+        { type: 'spread', startAge: 65, endAge: 66 },
+      ],
+    });
+    const prev: InvestmentState = {
+      accounts: [{ value: 1000, costBasis: 1000 }],
+      nisaLifetimeCostBasis: { self: 0, spouse: 0 },
+    };
+
+    const result = stepInvestment(prev, { age: 65, investment });
+
+    // 1 本目: 1000 / 2 = 500 → 残高 500。2 本目: 500 / 2 = 250 → 残高 250。合計 750。
+    expect(result.withdrawal).toBe(750);
+    expect(result.investmentValue).toBeCloseTo(250, 10);
+  });
+
+  it('積立を継続しながら複数年にわたり2回の一括取崩を適用できる', () => {
+    // 初期保有 1000 万、毎月 10 万(年 120 万)積立、利回り 0。
+    // 40 歳に 200 万、45 歳に 300 万の一括取崩(取崩後も積立は継続する)。
+    const investment = oneAccount({
+      accountType: 'nisa',
+      initialHolding: 1000,
+      monthlyAmount: 10,
+      annualReturn: 0,
+      startAge: 30,
+      endAge: 50,
+      withdrawals: [
+        { type: 'lumpSum', age: 40, amount: 200 },
+        { type: 'lumpSum', age: 45, amount: 300 },
+      ],
+    });
+
+    let state = initInvestmentState(investment.accounts);
+    const byAge = new Map<number, number>();
+    for (let age = 40; age <= 45; age++) {
+      const result = stepInvestment(state, { age, investment });
+      byAge.set(age, result.withdrawal);
+      state = result.state;
+    }
+
+    // 40 歳: 積立 120 → 1120、一括 200 → 920。
+    expect(byAge.get(40)).toBe(200);
+    // 41〜44 歳: 取り崩しなし(積立のみ)。920 + 120 × 4 = 1400。
+    expect(byAge.get(41)).toBe(0);
+    expect(byAge.get(44)).toBe(0);
+    // 45 歳: 積立 120 → 1520、2 回目の一括 300 → 1220。
+    expect(byAge.get(45)).toBe(300);
+    expect(state.accounts[0]!.value).toBeCloseTo(1220, 10);
+  });
+
+  it('課税口座で複数設定を適用しても二重課税・課税漏れが起きない', () => {
+    // 時価 1000 / 簿価 600(評価益割合 0.4)。spread(200)+ lumpSum(100)= 計 300 を取り崩す。
+    const investment = oneAccount({
+      accountType: 'taxable',
+      annualReturn: 0,
+      withdrawals: [
+        { type: 'spread', startAge: 65, endAge: 69 },
+        { type: 'lumpSum', age: 65, amount: 100 },
+      ],
+    });
+    const prev: InvestmentState = {
+      accounts: [{ value: 1000, costBasis: 600 }],
+      nisaLifetimeCostBasis: { self: 0, spouse: 0 },
+    };
+
+    const result = stepInvestment(prev, { age: 65, investment });
+
+    expect(result.withdrawal).toBe(300);
+    // 簿価按分(残存比率)では評価益割合が取崩の前後で不変(0.4)なため、
+    // 課税額は取崩総額 300 に対して一度に課税した場合と一致する。
+    expect(result.tax).toBeCloseTo(300 * 0.4 * CAPITAL_GAINS_TAX_RATE, 10);
+    expect(result.investmentValue).toBeCloseTo(700, 10);
+    expect(result.state.accounts[0]!.costBasis).toBeCloseTo(420, 10); // 600 × (1 − 300/1000)
+  });
+
+  it('取り崩し設定が空配列なら取り崩さない', () => {
+    const investment = oneAccount({ accountType: 'nisa', annualReturn: 0, withdrawals: [] });
+    const prev: InvestmentState = {
+      accounts: [{ value: 1000, costBasis: 1000 }],
+      nisaLifetimeCostBasis: { self: 0, spouse: 0 },
+    };
+
+    const result = stepInvestment(prev, { age: 70, investment });
+
+    expect(result.withdrawal).toBe(0);
+    expect(result.tax).toBe(0);
+    expect(result.investmentValue).toBeCloseTo(1000, 10);
   });
 });
 
@@ -416,7 +751,7 @@ describe('stepInvestment - NISA生涯上限(1800万)', () => {
       monthlyAmount: 10,
       annualReturn: 0,
       endAge: 90,
-      withdrawal: { startAge: 60, annualAmount: 500 },
+      withdrawals: [{ type: 'lumpSum', age: 65, amount: 500 }],
     });
 
     const result = stepInvestment(prev, { age: 65, investment });
@@ -474,7 +809,7 @@ describe('取得価額(簿価)を持つ初期保有の運用(#59)', () => {
       initialHolding: 1000,
       acquisitionCost: 600,
       annualReturn: 0,
-      withdrawal: { startAge: 65, annualAmount: 100 },
+      withdrawals: [{ type: 'lumpSum', age: 70, amount: 100 }],
     });
     const prev = initInvestmentState(investment.accounts);
     expect(prev.accounts[0]).toEqual({ value: 1000, costBasis: 600 });
@@ -495,7 +830,7 @@ describe('取得価額(簿価)を持つ初期保有の運用(#59)', () => {
       accountType: 'taxable',
       initialHolding: 1000,
       annualReturn: 0,
-      withdrawal: { startAge: 65, annualAmount: 100 },
+      withdrawals: [{ type: 'lumpSum', age: 70, amount: 100 }],
     });
     const prev = initInvestmentState(investment.accounts);
     expect(prev.accounts[0]).toEqual({ value: 1000, costBasis: 1000 });

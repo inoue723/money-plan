@@ -254,13 +254,47 @@ export interface ExpenseInput {
   items: ExpenseItem[];
 }
 
-/** 投資の取り崩し設定。 */
-export interface WithdrawalSetting {
-  /** 取り崩し開始年齢(歳)。 */
+/**
+ * 分割取崩(#69)。指定した年齢期間で、その枠の残高を**均等に取り崩し切る**設定。
+ *
+ * 金額の入力は持たない。毎年の取崩額は「取崩直前の評価額 ÷ 残り年数」で動的に決まる:
+ * ```
+ * 残り年数   = endAge − 当年年齢 + 1   (両端を含むため +1)
+ * 当年の取崩額 = 取崩直前の評価額 ÷ 残り年数
+ * ```
+ * この式により `endAge` の年は残り年数が 1 になり、残額をすべて取り崩す(= 期間末に残高 0)。
+ * 運用益が出ている間は毎年の取崩額は完全な定額にはならず、残高に応じて増減する。
+ */
+export interface SpreadWithdrawal {
+  type: 'spread';
+  /** 取り崩し開始年齢(歳。この年齢から取り崩す = 両端を含む)。 */
   startAge: number;
-  /** 年間取崩額(万円)。 */
-  annualAmount: number;
+  /** 取り崩し終了年齢(歳。この年齢の年に残額をすべて取り崩す = 両端を含む)。 */
+  endAge: number;
 }
+
+/**
+ * 一括取崩(#69)。指定した年齢の年に、指定額を一度だけ取り崩す設定。
+ *
+ * 取崩直前の評価額が指定額に満たない場合は残高全額を取り崩す(`min(amount, 残高)`)。
+ * 「残高を全額取り崩したい」場合は、残高以上の金額を入力する運用とする。
+ */
+export interface LumpSumWithdrawal {
+  type: 'lumpSum';
+  /** 取り崩す年齢(歳)。この年齢の年にのみ適用される。 */
+  age: number;
+  /** 取崩額(万円)。残高が足りない場合は残高全額までに制限される。 */
+  amount: number;
+}
+
+/**
+ * 投資の取り崩し設定(判別可能union。#69)。`type` フィールドで種別を判別する。
+ *
+ * 1 つの投資枠は複数の取り崩し設定を持てる(`InvestmentAccount.withdrawals`)。
+ * 同一年に複数の設定が該当する場合の適用順(spread → lumpSum、同種は定義順)は
+ * finance-core 側の仕様。詳細は `src/investment.ts` の冒頭コメントを参照。
+ */
+export type WithdrawalSetting = SpreadWithdrawal | LumpSumWithdrawal;
 
 /** 投資口座の種別。'nisa' は非課税(NISA 上限あり)、'taxable' は課税口座(特定口座等)。 */
 export type AccountType = 'nisa' | 'taxable';
@@ -307,8 +341,16 @@ export interface InvestmentAccount {
   startAge: number;
   /** 積立終了年齢(歳)。デフォルトは退職年齢。 */
   endAge: number;
-  /** 取り崩し設定(枠ごと。未設定の場合は undefined)。 */
-  withdrawal?: WithdrawalSetting;
+  /**
+   * 取り崩し設定のリスト(枠ごと。#69)。**空配列 = 取り崩しなし**。
+   *
+   * 1 つの枠に分割取崩(spread)・一括取崩(lumpSum)を任意個数・任意の組み合わせで登録できる
+   * (例: 65〜85 歳の分割取崩に加えて、70 歳に一括で 300 万を取り崩す)。
+   * 同一年に複数の設定が該当する場合は spread → lumpSum の順、同種は定義順に順次適用する
+   * (残高 0 になったら以降の取崩額は 0)。UI 側では期間・年齢の重複を警告するが、
+   * 計算側は重複入力でもクラッシュせず順次適用で処理する。
+   */
+  withdrawals: WithdrawalSetting[];
 }
 
 /**
