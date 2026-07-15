@@ -1,7 +1,14 @@
 import { describe, expect, it } from 'vitest';
 
 import { runSimulation } from './simulation';
-import type { EducationPlan, ExpenseItem, LifeEvent, SimulationInput, WorkPeriod } from './types';
+import type {
+  EducationPlan,
+  ExpenseItem,
+  LifeEvent,
+  SimulationInput,
+  WorkPeriod,
+  YearlyResult,
+} from './types';
 
 const publicPlan: EducationPlan = {
   preschool: 'public',
@@ -867,6 +874,125 @@ describe('runSimulation - 配偶者の収入(#49)', () => {
     const at61 = result.find((r) => r.age === 61)!;
     expect(at60.income.pension).toBe(0);
     expect(at61.income.pension).toBeGreaterThan(0);
+  });
+});
+
+describe('runSimulation - 年金の額面計上と収支恒等式(#79)', () => {
+  // 収入合計(額面)。apps/web の yearColumns.ts の totalIncome と同義。
+  const totalIncome = (r: YearlyResult): number =>
+    r.income.grossSalary +
+    r.income.spouseSalary +
+    r.income.pension +
+    r.income.childAllowance +
+    r.income.other;
+
+  // 支出合計(税・社会保険込み)。yearColumns.ts の totalExpenseWithTax と同義。
+  const totalExpenseWithTax = (r: YearlyResult): number => {
+    const e = r.expense;
+    const items = e.items.reduce((s, it) => s + it.amount, 0);
+    const base = (e.rent ?? 0) + items + e.education + e.loan + e.events;
+    return base + r.tax.incomeTax + r.tax.residentTax + r.tax.socialInsurance;
+  };
+
+  // #79 リグレッション: 年金分の税の二重計上が無ければ、全年で
+  // 収入合計 − (支出合計 + 所得税 + 住民税 + 社会保険料) − 年間積立額 = 年間収支 が成立する。
+  const expectIdentity = (result: YearlyResult[]): void => {
+    for (const y of result) {
+      expect(totalIncome(y) - totalExpenseWithTax(y) - y.investmentContribution).toBeCloseTo(
+        y.balance,
+        6,
+      );
+    }
+  };
+
+  it('年金が課税水準(500万)でも全年で 収入合計 − 支出合計 − 年間積立額 = 年間収支 が成立する', () => {
+    const result = runSimulation(
+      baseInput({
+        basic: { currentAge: 60, endAge: 90, savings: 1000 },
+        income: {
+          workPeriods: [workPeriod({ startAge: 60, endAge: 64, income: 700, raiseRate: 0 })],
+          retirementBonus: 2000,
+          pension: 500,
+          other: 0,
+        },
+        investment: {
+          accounts: [
+            {
+              name: 'NISA',
+              accountType: 'nisa',
+              owner: 'self',
+              initialHolding: 0,
+              monthlyAmount: 3,
+              annualReturn: 3.0,
+              startAge: 60,
+              endAge: 64,
+              withdrawals: [],
+            },
+          ],
+        },
+      }),
+    );
+
+    // 受給年は年金が額面(500万)で計上され、年金分の税が発生する水準であること
+    // (この二重計上バグを踏む前提の確認)。
+    const pensionYear = result.find((y) => y.age === 70)!;
+    expect(pensionYear.income.pension).toBeCloseTo(500, 6);
+    expect(pensionYear.tax.incomeTax + pensionYear.tax.residentTax).toBeGreaterThan(0);
+
+    expectIdentity(result);
+  });
+
+  it('年金が非課税水準(150万)のデフォルト相当入力でも恒等式が成立する', () => {
+    const result = runSimulation(
+      baseInput({
+        basic: { currentAge: 60, endAge: 90, savings: 1000 },
+        income: {
+          workPeriods: [workPeriod({ startAge: 60, endAge: 64, income: 600, raiseRate: 0 })],
+          retirementBonus: 0,
+          pension: 150,
+          other: 0,
+        },
+      }),
+    );
+
+    // 非課税水準では年金分の所得税・住民税は 0。
+    const pensionYear = result.find((y) => y.age === 70)!;
+    expect(pensionYear.income.pension).toBeCloseTo(150, 6);
+
+    expectIdentity(result);
+  });
+
+  it('本人・配偶者ともに課税水準の年金でも恒等式が成立する', () => {
+    const result = runSimulation(
+      baseInput({
+        basic: { currentAge: 60, endAge: 90, savings: 1500 },
+        income: {
+          workPeriods: [workPeriod({ startAge: 60, endAge: 64, income: 700, raiseRate: 0 })],
+          retirementBonus: 0,
+          pension: 500,
+          other: 0,
+        },
+        family: {
+          children: [],
+          spouse: {
+            age: 60,
+            income: {
+              workPeriods: [workPeriod({ startAge: 60, endAge: 64, income: 500, raiseRate: 0 })],
+              retirementBonus: 0,
+              pension: 450,
+              other: 0,
+            },
+          },
+        },
+      }),
+    );
+
+    // 本人・配偶者の年金が同一年に額面で計上される(合算 = 950)。
+    const pensionYear = result.find((y) => y.age === 70)!;
+    expect(pensionYear.income.pension).toBeCloseTo(950, 6);
+    expect(pensionYear.tax.incomeTax + pensionYear.tax.residentTax).toBeGreaterThan(0);
+
+    expectIdentity(result);
   });
 });
 

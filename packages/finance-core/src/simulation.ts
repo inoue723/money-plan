@@ -163,7 +163,9 @@ interface PersonYearIncome {
   grossSalary: number;
   /** 給与・事業の手取り。 */
   salaryNet: number;
-  /** 公的年金の手取り(受給前は 0)。 */
+  /** 公的年金の額面(受給前は 0。#79。年金分の税は `tax` 側に計上する)。 */
+  pensionGross: number;
+  /** 公的年金の手取り(受給前は 0)。手取り収入(net)・年間収支の算出に使う。 */
   pensionNet: number;
   /** 固定その他収入(手取り扱い・経常収支。初年は月割按分の対象。#51)。 */
   recurringOther: number;
@@ -212,6 +214,9 @@ const calcPersonYearIncome = (
   }
 
   // 公的年金は全就労期間の終了翌年から受給する(働き方期間が無い場合は起点から受給)。
+  // 額面(pensionGross)は給与と同じく収入内訳へ、年金分の所得税・住民税は税内訳へ計上する(#79)。
+  // 手取り(pensionNet)は手取り収入・年間収支の算出にのみ用いる(収入内訳には出さない)。
+  let pensionGross = 0;
   let pensionNet = 0;
   if (age > lastWorkEndAge && income.pension > 0) {
     const pensionTax = calcPensionTax({ pension: income.pension, age, ...deduction });
@@ -220,6 +225,7 @@ const calcPersonYearIncome = (
       incomeTax: pensionTax.incomeTax,
       residentTax: pensionTax.residentTax,
     });
+    pensionGross = income.pension;
     pensionNet = pensionTax.netPension;
   }
 
@@ -233,7 +239,16 @@ const calcPersonYearIncome = (
     retiredThisYear = true;
   }
 
-  return { grossSalary, salaryNet, pensionNet, recurringOther, oneTimeOther, tax, retiredThisYear };
+  return {
+    grossSalary,
+    salaryNet,
+    pensionGross,
+    pensionNet,
+    recurringOther,
+    oneTimeOther,
+    tax,
+    retiredThisYear,
+  };
 };
 
 // ---------------------------------------------------------------------------
@@ -330,6 +345,9 @@ export function runSimulation(input: SimulationInput): SimulationResult {
     const fullTax = spouseYear ? addTaxBreakdown(selfYear.tax, spouseYear.tax) : selfYear.tax;
     const taxBreakdown = monthFactor === 1 ? fullTax : scaleTaxBreakdown(fullTax, monthFactor);
     const salaryNet = (selfYear.salaryNet + (spouseYear ? spouseYear.salaryNet : 0)) * monthFactor;
+    // 年金の額面(収入内訳用)と手取り(手取り収入・年間収支用)を分けて集計する(#79)。
+    const pensionGross =
+      (selfYear.pensionGross + (spouseYear ? spouseYear.pensionGross : 0)) * monthFactor;
     const pensionNet =
       (selfYear.pensionNet + (spouseYear ? spouseYear.pensionNet : 0)) * monthFactor;
 
@@ -474,7 +492,7 @@ export function runSimulation(input: SimulationInput): SimulationResult {
       grossSalary,
       spouseSalary: spouseSalary * monthFactor,
       net: salaryNet,
-      pension: pensionNet,
+      pension: pensionGross,
       childAllowance,
       other: otherIncome,
       investmentGain: invStep.gain,
