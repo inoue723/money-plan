@@ -30,6 +30,8 @@ import {
   PENSION_DEDUCTION,
   RECONSTRUCTION_SURTAX_RATE,
   RESIDENT_TAX,
+  RETIREMENT_INCOME_DEDUCTION,
+  RETIREMENT_INCOME_TAXABLE_RATE,
   SALARY_INCOME_DEDUCTION,
   SOCIAL_INSURANCE,
   SPOUSE_DEDUCTION,
@@ -500,5 +502,101 @@ export function calcPensionTax(input: PensionTaxInput): PensionTaxResult {
     incomeTax: toManyen(incomeTaxYen),
     residentTax: toManyen(residentTaxYen),
     netPension: toManyen(netYen),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// 退職所得(退職金の退職所得控除・1/2課税・分離課税)
+// ---------------------------------------------------------------------------
+
+/**
+ * 退職所得控除額(円)を勤続年数から求める。
+ *
+ * - 勤続20年以下: 40万円 × 勤続年数(ただし最低 80万円)。
+ * - 勤続20年超  : 800万円 + 70万円 ×(勤続年数 − 20年)。
+ *
+ * 勤続年数の1年未満の端数は切り上げる(税法の扱いに合わせる)。0 年や端数は最低 1 年として扱う。
+ * 障害退職による 100万円加算・短期退職手当等の特例は考慮しない(簡易化。SPEC.md 1.4)。
+ *
+ * @param yearsOfService 勤続年数(年)。小数は切り上げる。
+ * @returns 退職所得控除額(円)。
+ */
+export function calcRetirementIncomeDeduction(yearsOfService: number): number {
+  const { perYearUpTo20, perYearOver20, thresholdYears, minimum } = RETIREMENT_INCOME_DEDUCTION;
+  // 勤続年数の1年未満は切り上げ。勤続0年でも最低1年分として扱う。
+  const years = Math.max(1, Math.ceil(yearsOfService));
+
+  const deduction =
+    years <= thresholdYears
+      ? perYearUpTo20 * years
+      : perYearUpTo20 * thresholdYears + perYearOver20 * (years - thresholdYears);
+
+  return Math.max(minimum, deduction);
+}
+
+/**
+ * 課税退職所得金額(円)=(退職金 − 退職所得控除)× 1/2。0 未満は 0 とする。
+ *
+ * この金額に対して所得税・住民税が分離課税される(他の所得と合算しない)。
+ *
+ * @param retirementBonusYen 退職金の収入金額(円)。
+ * @param yearsOfService 勤続年数(年)。小数は切り上げる。
+ * @returns 課税退職所得金額(円)。
+ */
+export function calcRetirementTaxableIncome(
+  retirementBonusYen: number,
+  yearsOfService: number,
+): number {
+  const afterDeduction = retirementBonusYen - calcRetirementIncomeDeduction(yearsOfService);
+  return Math.max(0, afterDeduction) * RETIREMENT_INCOME_TAXABLE_RATE;
+}
+
+/** 退職金の税計算の入力(金額は万円)。 */
+export interface RetirementTaxInput {
+  /** 退職金の収入金額(額面・年額・万円)。 */
+  retirementBonus: number;
+  /** 勤続年数(年)。小数は切り上げる。 */
+  yearsOfService: number;
+}
+
+/** 退職金の税計算の結果(金額は万円)。 */
+export interface RetirementTaxResult {
+  /** 所得税(復興特別所得税を含む。分離課税)。 */
+  incomeTax: number;
+  /** 住民税(所得割のみ。分離課税では均等割は課さない)。 */
+  residentTax: number;
+  /** 手取り退職金(退職金 − 所得税 − 住民税)。 */
+  netRetirementBonus: number;
+}
+
+/**
+ * 退職金に退職所得控除・1/2課税・分離課税を適用し、税額と手取りを求める。
+ *
+ * 課税退職所得金額 =(退職金 − 退職所得控除)× 1/2 を課税標準として:
+ * - 所得税: 給与等と同じ超過累進速算表(復興特別所得税込み)を分離して適用する。
+ * - 住民税: 所得割(10%)のみを課す。分離課税のため均等割は課さない。
+ *
+ * 他の所得(給与・年金等)とは合算しない分離課税として計算するため、引数は退職金額と
+ * 勤続年数のみで完結する。この関数は #73(iDeCo・小規模企業共済の一時金)でも
+ * 退職所得課税の共通ロジックとして再利用できるよう、汎用的な引数で公開している。
+ *
+ * @param input 退職金額(万円)と勤続年数(年)。
+ * @returns 所得税・住民税・手取り退職金(いずれも万円)。
+ */
+export function calcRetirementTax(input: RetirementTaxInput): RetirementTaxResult {
+  const retirementBonusYen = toYen(input.retirementBonus);
+  const taxableIncomeYen = calcRetirementTaxableIncome(retirementBonusYen, input.yearsOfService);
+
+  // 所得税は給与等と同じ速算表(復興特別所得税込み)を分離適用する。
+  const incomeTaxYen = calcIncomeTax(taxableIncomeYen);
+  // 住民税は所得割(10%)のみ。均等割は分離課税では課さない。課税標準は1,000円未満切り捨て。
+  const residentTaxYen = floorYen(roundDownTo1000(taxableIncomeYen) * RESIDENT_TAX.incomeRate);
+
+  const netYen = retirementBonusYen - incomeTaxYen - residentTaxYen;
+
+  return {
+    incomeTax: toManyen(incomeTaxYen),
+    residentTax: toManyen(residentTaxYen),
+    netRetirementBonus: toManyen(netYen),
   };
 }

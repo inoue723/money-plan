@@ -11,6 +11,9 @@ import {
   calcPensionTax,
   calcPensionTaxableIncome,
   calcResidentTax,
+  calcRetirementIncomeDeduction,
+  calcRetirementTax,
+  calcRetirementTaxableIncome,
   calcSalaryIncome,
   calcSalaryIncomeDeduction,
   calcSalaryTax,
@@ -304,5 +307,52 @@ describe('公的年金等控除・年金受給', () => {
     expect(residentTax).toBeGreaterThan(0);
     expect(netPension).toBeLessThan(250);
     expect(netPension).toBeGreaterThan(230);
+  });
+});
+
+describe('退職所得(退職金の退職所得控除・分離課税)', () => {
+  it('退職所得控除は勤続20年以下が40万/年・20年超が70万/年、最低80万', () => {
+    // 勤続10年: 40万 × 10 = 400万
+    expect(calcRetirementIncomeDeduction(10)).toBe(4_000_000);
+    // 勤続20年: 40万 × 20 = 800万
+    expect(calcRetirementIncomeDeduction(20)).toBe(8_000_000);
+    // 勤続38年: 800万 + 70万 ×(38 − 20)= 800万 + 1,260万 = 2,060万
+    expect(calcRetirementIncomeDeduction(38)).toBe(20_600_000);
+    // 勤続1年でも最低80万を保証
+    expect(calcRetirementIncomeDeduction(1)).toBe(800_000);
+    // 1年未満の端数は切り上げ(10.1年 → 11年扱い = 440万)
+    expect(calcRetirementIncomeDeduction(10.1)).toBe(4_400_000);
+  });
+
+  it('課税退職所得金額 =(退職金 − 控除)× 1/2、0 未満は 0', () => {
+    // 退職金 2000万・勤続10年 → (2000万 − 400万)/2 = 800万
+    expect(calcRetirementTaxableIncome(20_000_000, 10)).toBe(8_000_000);
+    // 控除が退職金を上回る場合は 0
+    expect(calcRetirementTaxableIncome(20_000_000, 38)).toBe(0);
+  });
+
+  it('控除内に収まる退職金は非課税(手取り = 退職金額)', () => {
+    // 退職金 1000万・勤続30年 → 控除 1500万 > 退職金。課税退職所得 0。
+    const { incomeTax, residentTax, netRetirementBonus } = calcRetirementTax({
+      retirementBonus: 1000,
+      yearsOfService: 30,
+    });
+    expect(incomeTax).toBe(0);
+    expect(residentTax).toBe(0);
+    expect(netRetirementBonus).toBe(1000);
+  });
+
+  it('課税水準の退職金は分離課税で所得税・住民税が生じる', () => {
+    // 退職金 2000万・勤続10年 → 課税退職所得 800万。
+    // 所得税: 800万 × 23% − 63.6万 = 120.4万 → ×1.021 = 1,229,284 円
+    // 住民税(所得割のみ): 800万 × 10% = 80万 円。均等割は課さない。
+    const { incomeTax, residentTax, netRetirementBonus } = calcRetirementTax({
+      retirementBonus: 2000,
+      yearsOfService: 10,
+    });
+    expect(incomeTax).toBeCloseTo(122.9284, 4);
+    expect(residentTax).toBe(80);
+    // 手取り = 2000 − 122.9284 − 80 = 1797.0716 万
+    expect(netRetirementBonus).toBeCloseTo(1797.0716, 4);
   });
 });
