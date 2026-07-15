@@ -29,7 +29,8 @@
  *    v2 → v3: `basic.investments` を廃止し投資枠ごとの `initialHolding` へ移行し、
  *    名前が「家賃」の ExpenseItem を家賃専用型 `expense.rent` へ変換、
  *    v3 → v4: `spouse.income`(固定年収)を本人と同等の `IncomeInput` 構造へ変換(#49)し、
- *    投資枠に名義 `owner` を追加して既存枠はすべて `'self'`(本人)とする(#52))。
+ *    投資枠に名義 `owner` を追加して既存枠はすべて `'self'`(本人)とする(#52)、
+ *    v5 → v6: 投資枠の取り崩しを単一の年額指定 `withdrawal` から複数設定 `withdrawals` へ再設計(#69))。
  */
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
@@ -40,12 +41,14 @@ import type {
   ExpenseInput,
   FamilyInput,
   IncomeInput,
+  InvestmentAccount,
   InvestmentInput,
   LifeEvent,
   RentInput,
   SimulationInput,
   SimulationResult,
   Spouse,
+  WithdrawalSetting,
 } from '@money-plan/finance-core';
 
 // ---------------------------------------------------------------------------
@@ -123,7 +126,7 @@ export const DEFAULT_INPUT: SimulationInput = {
         annualReturn: 3.0, // SPEC.md 2.2 デフォルト 3.0%
         startAge: 30, // 積立開始年齢。デフォルトは現在年齢(30)
         endAge: 65, // 積立終了年齢。デフォルトは退職年齢(65)
-        withdrawal: undefined,
+        withdrawals: [], // 取り崩し設定(#69)。空配列 = 取り崩しなし
       },
     ],
   },
@@ -175,7 +178,7 @@ export interface PlanTab {
  * 永続化スキーマのバージョン。`tabs` や入力形状(`SimulationInput`)の構造を
  * 破壊的に変更したら増やし、`persist` の `migrate` で旧データを変換する。
  */
-export const PERSIST_VERSION = 5;
+export const PERSIST_VERSION = 6;
 
 /** localStorage のキー(SPEC.md 4.1: ローカルのみに保存)。 */
 export const PERSIST_KEY = 'money-plan/simulation';
@@ -277,6 +280,47 @@ const migrateAddOwner = (input: SimulationInput): SimulationInput => ({
 /** v3 → v4 の入力マイグレーションを両方(#49 / #52)適用する。両者は別フィールドを扱うため共存できる。 */
 const migrateInputV3toV4 = (input: SimulationInput): SimulationInput =>
   migrateAddOwner(migrateSpouseIncome(input));
+
+/** v5 以前の取り崩し設定(単一・年額指定)。#69 で廃止した旧形式。 */
+interface LegacyWithdrawal {
+  /** 取り崩し開始年齢(歳)。 */
+  startAge: number;
+  /** 年間取崩額(万円)。#69 で年額指定タイプを廃止したため移行先が無く、破棄される。 */
+  annualAmount: number;
+}
+
+/**
+ * v5 → v6 の入力マイグレーション(#69)。投資枠の取り崩しを、単一の年額指定 `withdrawal` から
+ * 複数設定のリスト `withdrawals`(判別可能union)へ移行する。
+ *
+ * 旧 `withdrawal: { startAge, annualAmount }` は
+ * `withdrawals: [{ type: 'spread', startAge, endAge: input.basic.endAge }]` に変換する
+ * (取り崩し開始年齢を引き継ぎ、シミュレーション終了年齢まで分割して取り崩し切る設定にする)。
+ *
+ * **注意: 年額指定タイプの廃止に伴う仕様変更のため、移行後は挙動が変わる。**
+ * 旧形式の `annualAmount`(年間取崩額)は分割取崩に対応する概念が無いため**破棄する**
+ * (分割取崩は金額を入力せず、残高 ÷ 残り年数 で毎年の取崩額が決まる)。移行後のプランでは
+ * 取崩額が旧設定と一致しない。ユーザーは必要に応じて UI で設定し直す。
+ *
+ * 旧 `withdrawal` が `undefined`(取り崩しなし)の場合は `withdrawals: []` にする。
+ */
+const migrateWithdrawals = (input: SimulationInput): SimulationInput => ({
+  ...input,
+  investment: {
+    ...input.investment,
+    accounts: input.investment.accounts.map((account) => {
+      const legacy = account as InvestmentAccount & { withdrawal?: LegacyWithdrawal };
+      // 旧キー `withdrawal` は残さず取り除く(新形式 `withdrawals` に一本化する)。
+      const { withdrawal, ...rest } = legacy;
+      const withdrawals: WithdrawalSetting[] = withdrawal
+        ? // annualAmount は移行先が無いため破棄し、開始年齢〜シミュレーション終了年齢の分割取崩にする。
+          [{ type: 'spread', startAge: withdrawal.startAge, endAge: input.basic.endAge }]
+        : // 既に新形式(#69 以降)なら維持し、取り崩しなしなら空配列にする。
+          (rest.withdrawals ?? []);
+      return { ...rest, withdrawals };
+    }),
+  },
+});
 
 /** タブの一意 ID を採番する。 */
 const createPlanId = (): string =>
@@ -549,6 +593,19 @@ export const useSimulationStore = create<SimulationState>()(
         // (1 月開始相当=初年もフル 12 ヶ月)にフォールバックするため、従来挙動を維持できる。
         // 新規プランのみ DEFAULT_INPUT により当月起点(初年月割)となる。
         // 明示的なデータ変換は不要のため、ここではバージョンを上げるのみ(意図的な no-op)。
+
+        if (version < 6) {
+          // v5 → v6: 投資枠の取り崩しを単一の年額指定 `withdrawal` から複数設定 `withdrawals` へ移行(#69)。
+          data = {
+            ...data,
+            input: migrateWithdrawals(data.input),
+            tabs: data.tabs.map((t) => ({
+              ...t,
+              savedInput: migrateWithdrawals(t.savedInput),
+              draftInput: migrateWithdrawals(t.draftInput),
+            })),
+          };
+        }
 
         return data;
       },

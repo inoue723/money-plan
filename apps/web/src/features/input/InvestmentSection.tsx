@@ -5,14 +5,22 @@
  * 毎月積立額 / 想定利回り(0〜15%)/ 積立開始年齢 / 積立終了年齢 / 取り崩し設定 を入力する。
  * NISA 枠には制度上の投資上限(生涯 1800 万・年間 360 万)が全 NISA 枠合算で適用され、
  * 上限超過分は積み立てられず預金に残る(計算は finance-core 側)。
+ *
+ * 取り崩し(#69)は枠ごとに**複数**設定できる。分割取崩(期間で均等に取り崩し切る)と
+ * 一括取崩(指定年齢に指定額)の 2 種類をリストで追加・削除する。期間・年齢が重複する設定は
+ * 警告を表示するが、保存は妨げない(計算側は定義順に順次適用する)。
  */
-import type { AccountOwner, AccountType, InvestmentAccount } from '@money-plan/finance-core';
+import type {
+  AccountOwner,
+  AccountType,
+  InvestmentAccount,
+  WithdrawalSetting,
+} from '@money-plan/finance-core';
 import { NISA_LIFETIME_LIMIT, nisaInitialLifetimeUsage } from '@money-plan/finance-core';
 import { useSimulationStore } from '../../stores/simulationStore';
 import { NumberField } from '../../components/NumberField';
 import { AgeNumberField } from '../../components/AgeNumberField';
 import { SelectField } from '../../components/SelectField';
-import { ToggleField } from '../../components/ToggleField';
 
 const ACCOUNT_TYPE_OPTIONS: { value: AccountType; label: string }[] = [
   { value: 'nisa', label: 'NISA(非課税)' },
@@ -36,12 +44,81 @@ const createDefaultAccount = (currentAge: number): InvestmentAccount => ({
   annualReturn: 3.0,
   startAge: currentAge,
   endAge: 65,
-  withdrawal: undefined,
+  withdrawals: [], // 取り崩し設定(#69)。空配列 = 取り崩しなし
 });
+
+/** 取り崩し種別の選択肢(#69)。 */
+const WITHDRAWAL_TYPE_OPTIONS: { value: WithdrawalSetting['type']; label: string }[] = [
+  { value: 'spread', label: '分割取崩(期間で均等)' },
+  { value: 'lumpSum', label: '一括取崩(金額指定)' },
+];
+
+/**
+ * 「+ 取り崩しを追加」の既定設定(#69)。積立終了年齢からシミュレーション終了年齢まで
+ * 分割して取り崩し切る設定を初期値にする(老後の取り崩しの典型パターン)。
+ */
+const createDefaultWithdrawal = (accountEndAge: number, planEndAge: number): WithdrawalSetting => ({
+  type: 'spread',
+  startAge: accountEndAge,
+  endAge: Math.max(accountEndAge, planEndAge),
+});
+
+/**
+ * 取り崩し設定の種別を切り替える(#69)。種別ごとに持つフィールドが異なるため、
+ * 入力済みの年齢を引き継ぎつつ新しい種別のオブジェクトを組み立てる。
+ */
+const changeWithdrawalType = (
+  setting: WithdrawalSetting,
+  type: WithdrawalSetting['type'],
+  planEndAge: number,
+): WithdrawalSetting => {
+  if (type === 'spread') {
+    if (setting.type === 'spread') return setting; // 種別が変わらないならそのまま
+    // 一括 → 分割: 対象年齢を開始年齢として引き継ぎ、シミュレーション終了年齢まで取り崩す。
+    return { type: 'spread', startAge: setting.age, endAge: Math.max(setting.age, planEndAge) };
+  }
+  if (setting.type === 'lumpSum') return setting; // 種別が変わらないならそのまま
+  // 分割 → 一括: 開始年齢を対象年齢として引き継ぐ(取崩額は未入力 = 0 から)。
+  return { type: 'lumpSum', age: setting.startAge, amount: 0 };
+};
+
+/**
+ * 取り崩し設定 `index` が他の設定と期間・年齢で重複している場合の警告文(#69)。重複がなければ undefined。
+ *
+ * 重複しても保存・計算は妨げない(計算側は spread → lumpSum、同種は定義順に順次適用する)。
+ * ユーザーの意図しない二重取り崩しに気づけるよう、警告として表示するに留める。
+ */
+const overlapWarning = (withdrawals: WithdrawalSetting[], index: number): string | undefined => {
+  const target = withdrawals[index];
+  if (!target) return undefined;
+  const others = withdrawals.filter((_, i) => i !== index);
+
+  if (target.type === 'spread') {
+    // 期間 [startAge, endAge] が他の分割取崩の期間と交差するか(両端を含む)。
+    const overlapping = others.some(
+      (w) => w.type === 'spread' && w.startAge <= target.endAge && target.startAge <= w.endAge,
+    );
+    return overlapping
+      ? '他の分割取崩と期間が重複しています。重複する年は設定の順に続けて取り崩されます。'
+      : undefined;
+  }
+
+  if (others.some((w) => w.type === 'lumpSum' && w.age === target.age)) {
+    return '同じ年齢の一括取崩が他にもあります。同じ年に続けて取り崩されます。';
+  }
+  if (
+    others.some((w) => w.type === 'spread' && w.startAge <= target.age && target.age <= w.endAge)
+  ) {
+    return '分割取崩の期間と重なっています。その年は分割取崩のあとに一括取崩が適用されます。';
+  }
+  return undefined;
+};
 
 export function InvestmentSection() {
   const accounts = useSimulationStore((s) => s.input.investment.accounts);
   const currentAge = useSimulationStore((s) => s.input.basic.currentAge);
+  // 取り崩し設定の既定値(分割取崩の終了年齢)に使う(#69)。
+  const planEndAge = useSimulationStore((s) => s.input.basic.endAge);
   const hasSpouse = useSimulationStore((s) => s.input.family.spouse !== undefined);
   const setInvestment = useSimulationStore((s) => s.setInvestment);
 
@@ -96,6 +173,7 @@ export function InvestmentSection() {
           key={i}
           account={account}
           currentAge={currentAge}
+          planEndAge={planEndAge}
           hasSpouse={hasSpouse}
           onChange={(next) => updateAccount(i, next)}
           onRemove={() => removeAccount(i)}
@@ -117,17 +195,39 @@ export function InvestmentSection() {
 function AccountFields({
   account,
   currentAge,
+  planEndAge,
   hasSpouse,
   onChange,
   onRemove,
 }: {
   account: InvestmentAccount;
   currentAge: number;
+  /** シミュレーション終了年齢(basic.endAge)。分割取崩の既定の終了年齢に使う(#69)。 */
+  planEndAge: number;
   hasSpouse: boolean;
   onChange: (next: InvestmentAccount) => void;
   onRemove: () => void;
 }) {
-  const withdrawal = account.withdrawal;
+  // 取り崩し設定(#69)。空配列 = 取り崩しなし。
+  const withdrawals = account.withdrawals;
+
+  const updateWithdrawal = (index: number, next: WithdrawalSetting) => {
+    onChange({
+      ...account,
+      withdrawals: withdrawals.map((w, i) => (i === index ? next : w)),
+    });
+  };
+
+  const removeWithdrawal = (index: number) => {
+    onChange({ ...account, withdrawals: withdrawals.filter((_, i) => i !== index) });
+  };
+
+  const addWithdrawal = () => {
+    onChange({
+      ...account,
+      withdrawals: [...withdrawals, createDefaultWithdrawal(account.endAge, planEndAge)],
+    });
+  };
 
   // 配偶者なしのプランでは配偶者名義を選べない。ただし既に配偶者名義の枠(旧データ等)は
   // 値を表示できるよう選択肢に残す(上位で警告を出す)。
@@ -241,39 +341,133 @@ function AccountFields({
       </div>
 
       <div className="mt-2 rounded-md bg-slate-50 p-2">
-        <ToggleField
-          label="取り崩しを設定する"
-          checked={withdrawal !== undefined}
-          onChange={(checked) =>
-            onChange({
-              ...account,
-              withdrawal: checked ? { startAge: account.endAge, annualAmount: 0 } : undefined,
-            })
-          }
-          hint="老後の投資資産の取り崩し"
-        />
-        {withdrawal && (
-          <div className="mt-2 grid grid-cols-2 gap-2">
+        <div className="flex items-center justify-between">
+          <span className="text-xs font-medium text-slate-600">取り崩し</span>
+          <span className="text-[11px] text-slate-400">老後の投資資産の取り崩し</span>
+        </div>
+
+        {withdrawals.length === 0 && (
+          <p className="mt-1 text-[11px] text-slate-400">取り崩しの設定はありません。</p>
+        )}
+
+        <div className="mt-2 flex flex-col gap-2">
+          {withdrawals.map((withdrawal, i) => (
+            <WithdrawalFields
+              key={i}
+              withdrawal={withdrawal}
+              currentAge={currentAge}
+              planEndAge={planEndAge}
+              warning={overlapWarning(withdrawals, i)}
+              onChange={(next) => updateWithdrawal(i, next)}
+              onRemove={() => removeWithdrawal(i)}
+            />
+          ))}
+        </div>
+
+        <button
+          type="button"
+          onClick={addWithdrawal}
+          className="mt-2 rounded-md border border-sky-300 px-2 py-1 text-xs font-medium text-sky-600 hover:bg-sky-50"
+        >
+          + 取り崩しを追加
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/** 1 つの取り崩し設定の入力欄(#69。分割取崩 / 一括取崩)。 */
+function WithdrawalFields({
+  withdrawal,
+  currentAge,
+  planEndAge,
+  warning,
+  onChange,
+  onRemove,
+}: {
+  withdrawal: WithdrawalSetting;
+  currentAge: number;
+  planEndAge: number;
+  /** 他の設定と期間・年齢が重複する場合の警告文(重複がなければ undefined)。 */
+  warning?: string;
+  onChange: (next: WithdrawalSetting) => void;
+  onRemove: () => void;
+}) {
+  return (
+    <div className="rounded-md border border-slate-200 bg-white p-2">
+      <div className="flex items-end gap-2">
+        <div className="flex-1">
+          <SelectField
+            label="種別"
+            value={withdrawal.type}
+            options={WITHDRAWAL_TYPE_OPTIONS}
+            onChange={(v) =>
+              onChange(changeWithdrawalType(withdrawal, v as WithdrawalSetting['type'], planEndAge))
+            }
+            hint={
+              withdrawal.type === 'spread'
+                ? '期間中に残高を均等に取り崩し切る'
+                : '指定年齢にその額を取り崩す'
+            }
+          />
+        </div>
+        <button
+          type="button"
+          onClick={onRemove}
+          className="mb-1 rounded-md border border-rose-200 px-2 py-1 text-xs text-rose-500 hover:bg-rose-50"
+        >
+          削除
+        </button>
+      </div>
+
+      <div className="mt-2 grid grid-cols-2 gap-2">
+        {withdrawal.type === 'spread' ? (
+          <>
             <AgeNumberField
               label="開始年齢"
               value={withdrawal.startAge}
-              onChange={(v) => onChange({ ...account, withdrawal: { ...withdrawal, startAge: v } })}
+              onChange={(v) => onChange({ ...withdrawal, startAge: v })}
+              min={currentAge}
+              max={100}
+              unit="歳"
+            />
+            <AgeNumberField
+              label="終了年齢"
+              value={withdrawal.endAge}
+              onChange={(v) => onChange({ ...withdrawal, endAge: v })}
+              min={currentAge}
+              max={100}
+              unit="歳"
+              hint="この年に残額をすべて取り崩す"
+            />
+          </>
+        ) : (
+          <>
+            <AgeNumberField
+              label="対象年齢"
+              value={withdrawal.age}
+              onChange={(v) => onChange({ ...withdrawal, age: v })}
               min={currentAge}
               max={100}
               unit="歳"
             />
             <NumberField
-              label="年間取崩額"
-              value={withdrawal.annualAmount}
-              onChange={(v) =>
-                onChange({ ...account, withdrawal: { ...withdrawal, annualAmount: v } })
-              }
+              label="取崩額"
+              value={withdrawal.amount}
+              onChange={(v) => onChange({ ...withdrawal, amount: v })}
               min={0}
               unit="万円"
+              hint="残高が不足する場合は残高まで"
             />
-          </div>
+          </>
         )}
       </div>
+
+      {warning && (
+        <p className="mt-2 rounded-md border border-amber-200 bg-amber-50 px-2 py-1 text-[11px] text-amber-700">
+          {warning}
+        </p>
+      )}
     </div>
   );
 }

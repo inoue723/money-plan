@@ -14,6 +14,23 @@
  * ```
  * 当年の運用益(評価益)は「成長分」= (前年資産 + 積立額) × 利回り とする。
  *
+ * ## 取り崩し(#69)
+ * 各投資枠は取り崩し設定を**複数**持てる(`InvestmentAccount.withdrawals`。空配列 = 取り崩しなし)。
+ * 設定は判別可能union(`WithdrawalSetting`)で 2 種類ある:
+ *
+ *   - **分割取崩(spread)**: `startAge`〜`endAge` の期間で残高を均等に取り崩し切る。金額入力はなく、
+ *     当年の取崩額は「取崩直前の評価額 ÷ 残り年数(endAge − 当年年齢 + 1)」。`endAge` の年は
+ *     残り年数が 1 になるため残額をすべて取り崩し、**期間末に枠残高が 0** になる。
+ *   - **一括取崩(lumpSum)**: `age` の年に `amount`(万円)を取り崩す。残高が指定額に満たない
+ *     場合は残高全額まで(`min(amount, 残高)`)。
+ *
+ * 当年に該当する設定は次の順で**順次**適用する(各設定は直前の取崩後の残高に対して評価される):
+ *   1. spread(定義順)
+ *   2. lumpSum(定義順)
+ * spread を先に適用するのは、分割取崩の当年額を「一括取崩で減る前の残高」から算出し、
+ * 期間で均等に取り崩し切るという意図を保つため。期間・年齢が重複する複数設定が同一年に該当しても
+ * 計算はクラッシュせず順次適用で処理する(残高 0 になったら以降の取崩額は 0。重複は UI 側で警告する)。
+ *
  * ## 取崩時課税の実装方針(簿価按分法)
  * SPEC.md 2.3.2-7: 課税口座(taxable)は運用益に 20.315%(取崩時に課税)、NISA は非課税。
  * 取り崩し時点で評価額に含まれる評価益の割合を「簿価(取得原価の累計)」から求め、
@@ -47,7 +64,14 @@
  */
 
 import { CAPITAL_GAINS_TAX_RATE, NISA_ANNUAL_LIMIT, NISA_LIFETIME_LIMIT } from './constants';
-import type { AccountOwner, InvestmentAccount, InvestmentInput } from './types';
+import type {
+  AccountOwner,
+  InvestmentAccount,
+  InvestmentInput,
+  LumpSumWithdrawal,
+  SpreadWithdrawal,
+  WithdrawalSetting,
+} from './types';
 
 /** 名義の全リスト(名義ごとの集計・反復に使う内部定数)。 */
 const ACCOUNT_OWNERS: readonly AccountOwner[] = ['self', 'spouse'];
@@ -189,16 +213,48 @@ export const initInvestmentState = (accounts: InvestmentAccount[]): InvestmentSt
 };
 
 /**
+ * 当年に該当する取り崩し設定を、**適用順**に並べて返す(内部用。#69)。
+ *
+ * 適用順は spread(定義順)→ lumpSum(定義順)。spread を先に適用することで、分割取崩の
+ * 当年額を「一括取崩で減る前の残高」から算出する(期間で均等に取り崩し切る意図を保つ)。
+ * 期間・年齢が重複する設定が複数該当しても、そのまま定義順に並べて順次適用させる。
+ */
+const withdrawalsForAge = (withdrawals: WithdrawalSetting[], age: number): WithdrawalSetting[] => [
+  ...withdrawals.filter(
+    (w): w is SpreadWithdrawal => w.type === 'spread' && age >= w.startAge && age <= w.endAge,
+  ),
+  ...withdrawals.filter((w): w is LumpSumWithdrawal => w.type === 'lumpSum' && age === w.age),
+];
+
+/**
+ * 取り崩し設定 1 件の当年の取崩希望額(万円)を求める(内部用。#69)。
+ * 実際の取崩額は呼び出し側で残高 `value` にクランプする(`min(希望額, value)`)。
+ *
+ * - spread: 評価額 ÷ 残り年数(endAge − age + 1)。残り年数が 1 以下(= endAge の年)なら残額全部。
+ * - lumpSum: 指定額(`amount`)そのもの。
+ *
+ * @param value 取崩直前の評価額(同一年に先行する設定の取崩を反映済みの残高)。
+ */
+const desiredWithdrawal = (setting: WithdrawalSetting, age: number, value: number): number => {
+  if (setting.type === 'lumpSum') return setting.amount;
+  const remainingYears = setting.endAge - age + 1;
+  // endAge の年(= 残り 1 年)、および不正な入力で残り年数が 0 以下になる場合は残額をすべて取り崩す。
+  return remainingYears <= 1 ? value : value / remainingYears;
+};
+
+/**
  * 1 つの投資枠を 1 年分更新する純粋関数(内部用)。
  *
  * 計算順序(SPEC.md 2.3.1):
  * 1. 積立(積立終了年齢に達していなければ monthlyAmount × 12。ただし contributionCap でクランプ)
  * 2. 運用(積立後の元本に利回りを乗じて成長させ、評価益を確定)
- * 3. 取り崩し(開始年齢に達していれば年間取崩額を引き、課税口座なら評価益按分で課税)
+ * 3. 取り崩し(当年に該当する設定を spread → lumpSum の順に順次適用し、課税口座なら評価益按分で課税)
  */
 const stepAccount = (prev: AccountState, params: AccountStepParams): AccountStepResult => {
   const { account, age, contributionCap, monthFactor } = params;
-  const { accountType, monthlyAmount, annualReturn, startAge, endAge, withdrawal } = account;
+  const { accountType, monthlyAmount, annualReturn, startAge, endAge } = account;
+  // 旧データ(#69 以前の `withdrawal`)が migration を経ずに渡ってもクラッシュしないよう空配列に倒す。
+  const withdrawals = account.withdrawals ?? [];
 
   // --- 1. 積立(上限でクランプ) -------------------------------------------
   // 積立開始年齢「以降」かつ終了年齢「未満」の間のみ積立(= startAge <= age < endAge)。
@@ -215,29 +271,35 @@ const stepAccount = (prev: AccountState, params: AccountStepParams): AccountStep
   const grownValue = principal + gain;
 
   // --- 3. 取り崩し ---------------------------------------------------------
+  // 当年に該当する設定を spread → lumpSum の順に**順次**適用する(#69)。各設定は直前の取崩を
+  // 反映した残高に対して評価するため、残高が尽きたら以降の取崩額は 0 になる。
   let withdrawalAmount = 0;
   let tax = 0;
   let newValue = grownValue;
   let newCostBasis = costBasisAfterContribution;
 
-  const shouldWithdraw = withdrawal !== undefined && age >= withdrawal.startAge && grownValue > 0;
+  for (const setting of withdrawalsForAge(withdrawals, age)) {
+    // 残高が尽きたら以降の設定は取り崩せない(取崩額 0)。
+    if (newValue <= 0) break;
 
-  if (shouldWithdraw) {
     // 評価額を超えて取り崩すことはできない。
-    withdrawalAmount = Math.min(withdrawal.annualAmount, grownValue);
-
-    // 取崩後の評価額と簿価(簿価は取崩額のうち元本相当分だけ減らす)。
-    const remainingRatio = 1 - withdrawalAmount / grownValue;
-    newValue = grownValue - withdrawalAmount;
-    newCostBasis = costBasisAfterContribution * remainingRatio;
+    const amount = Math.min(Math.max(0, desiredWithdrawal(setting, age, newValue)), newValue);
+    if (amount <= 0) continue;
 
     // 課税口座のみ、取崩額に含まれる評価益へ課税する(NISA は非課税)。
+    // 簿価按分は残存比率で行うため評価益割合は取崩の前後で不変で、同一年に複数回取り崩しても
+    // 二重課税・課税漏れは起きない。
     if (accountType === 'taxable') {
-      const unrealizedGain = grownValue - costBasisAfterContribution;
-      const gainRatio = unrealizedGain > 0 ? unrealizedGain / grownValue : 0;
-      const taxableGain = withdrawalAmount * gainRatio;
-      tax = taxableGain * CAPITAL_GAINS_TAX_RATE;
+      const unrealizedGain = newValue - newCostBasis;
+      const gainRatio = unrealizedGain > 0 ? unrealizedGain / newValue : 0;
+      tax += amount * gainRatio * CAPITAL_GAINS_TAX_RATE;
     }
+
+    // 取崩後の評価額と簿価(簿価は取崩額のうち元本相当分だけ減らす)。
+    const remainingRatio = 1 - amount / newValue;
+    newValue -= amount;
+    newCostBasis *= remainingRatio;
+    withdrawalAmount += amount;
   }
 
   return {
