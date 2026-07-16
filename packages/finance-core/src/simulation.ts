@@ -24,6 +24,7 @@ import { educationCostForAge } from './education';
 import {
   calcChildAllowanceManyen,
   calcPensionTax,
+  calcRetirementTax,
   calcSalaryTax,
   calcSelfEmployedTax,
   type PersonalDeductionOptions,
@@ -142,19 +143,29 @@ interface PersonPlan {
   lastWorkEndAge: number;
   /** 退職金の計上年齢(最後の会社員期間の終了翌年)。会社員期間が無ければ undefined。 */
   retirementBonusAge: number | undefined;
+  /**
+   * 退職所得控除の算定に用いる勤続年数(年)。会社員期間の合計年数
+   * (各期間 endAge − startAge + 1 の総和。両端を含むため +1)。会社員期間が無ければ 0。
+   * ※単一の会社員期間を勤続とみなす一般的なケースではその期間の年数に一致する(簡易化)。
+   */
+  retirementYearsOfService: number;
 }
 
-/** 収入情報から退職金・年金の基準年齢を求め、`PersonPlan` を構築する。 */
+/** 収入情報から退職金・年金の基準年齢・勤続年数を求め、`PersonPlan` を構築する。 */
 const buildPersonPlan = (income: IncomeInput): PersonPlan => {
   const { workPeriods } = income;
   const lastWorkEndAge = workPeriods.reduce((max, p) => Math.max(max, p.endAge), -Infinity);
-  const lastEmployeeEndAge = workPeriods
-    .filter((p) => p.workStyle === 'employee')
-    .reduce((max, p) => Math.max(max, p.endAge), -Infinity);
+  const employeePeriods = workPeriods.filter((p) => p.workStyle === 'employee');
+  const lastEmployeeEndAge = employeePeriods.reduce((max, p) => Math.max(max, p.endAge), -Infinity);
   const retirementBonusAge = Number.isFinite(lastEmployeeEndAge)
     ? lastEmployeeEndAge + 1
     : undefined;
-  return { income, lastWorkEndAge, retirementBonusAge };
+  // 勤続年数 = 会社員期間の合計年数(両端を含むため endAge − startAge + 1)。退職所得控除に用いる。
+  const retirementYearsOfService = employeePeriods.reduce(
+    (sum, p) => sum + (p.endAge - p.startAge + 1),
+    0,
+  );
+  return { income, lastWorkEndAge, retirementBonusAge, retirementYearsOfService };
 };
 
 /** 1 人分の当年収入・税の計算結果(金額はすべて万円)。 */
@@ -189,7 +200,7 @@ const calcPersonYearIncome = (
   age: number,
   deduction: PersonalDeductionOptions,
 ): PersonYearIncome => {
-  const { income, lastWorkEndAge, retirementBonusAge } = plan;
+  const { income, lastWorkEndAge, retirementBonusAge, retirementYearsOfService } = plan;
 
   // 当年の働き方期間(該当なし = 無収入期間)。収入は期間の開始年齢を基準に複利成長する。
   const workPeriod = activeWorkPeriod(income.workPeriods, age);
@@ -231,11 +242,16 @@ const calcPersonYearIncome = (
 
   // その他収入(手取り扱い): 固定のその他収入(経常)と退職金(一時)を分けて返す。
   // 退職金は最後の会社員期間の終了翌年に一括計上する(初年でも月割按分しない)。
+  // 退職金には退職所得控除・1/2課税・分離課税を適用し、手取り額を計上する(#19)。
   const recurringOther = income.other;
   let oneTimeOther = 0;
   let retiredThisYear = false;
   if (age === retirementBonusAge && income.retirementBonus > 0) {
-    oneTimeOther += income.retirementBonus;
+    const { netRetirementBonus } = calcRetirementTax({
+      retirementBonus: income.retirementBonus,
+      yearsOfService: retirementYearsOfService,
+    });
+    oneTimeOther += netRetirementBonus;
     retiredThisYear = true;
   }
 

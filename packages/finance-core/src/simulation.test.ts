@@ -244,8 +244,10 @@ describe('runSimulation', () => {
     expect(working.income.grossSalary).toBeGreaterThan(0);
     expect(working.income.pension).toBe(0);
 
-    // 退職年に退職金がその他収入へ計上される。
-    expect(retireYear.income.other).toBeGreaterThanOrEqual(2000);
+    // 退職年に退職金(手取り)がその他収入へ計上される。勤続5年・退職金2000万は
+    // 退職所得控除200万を大きく超えるため分離課税され、手取りは額面2000万を下回る(#19)。
+    expect(retireYear.income.other).toBeGreaterThan(1500);
+    expect(retireYear.income.other).toBeLessThan(2000);
     expect(retireYear.events).toContain('退職金');
 
     // 退職後は給与0・年金あり。
@@ -411,7 +413,10 @@ describe('runSimulation', () => {
       }),
     );
     const bonusYear = result.find((y) => y.age === 40)!;
-    expect(bonusYear.income.other).toBeGreaterThanOrEqual(1000);
+    // 会社員期間30〜39(勤続10年)・退職金1000万は退職所得控除400万を超えるため課税され、
+    // 手取りは額面1000万を下回る(#19)。会社員期間が無い個人事業主期間は勤続に数えない。
+    expect(bonusYear.income.other).toBeGreaterThan(900);
+    expect(bonusYear.income.other).toBeLessThan(1000);
     expect(bonusYear.events).toContain('退職金');
     expect(result.filter((y) => y.events.includes('退職金'))).toHaveLength(1);
   });
