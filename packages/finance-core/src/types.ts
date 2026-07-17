@@ -490,6 +490,16 @@ export interface YearlyResult {
   investmentValue: number;
   /** 当年に実際に投資した積立額(全枠合計)。NISA 上限で停止した超過分は含まない。 */
   investmentContribution: number;
+  /**
+   * 当年の投資資産取崩額(全枠合計・税引前)。投資資産の評価額から差し引いた額そのもの。
+   * 実際に預金へ入るのは、ここから `investmentWithdrawalTax` を差し引いた額。
+   */
+  investmentWithdrawal: number;
+  /**
+   * 当年の取崩に伴う課税額(全枠合計)。課税口座(taxable)の運用益課税と、iDeCo・小規模企業共済の
+   * 受取課税(分割取崩 = 年金合算課税の増分 / 一括取崩 = 退職所得課税)の合計。NISA 枠は常に 0。
+   */
+  investmentWithdrawalTax: number;
   /** 当年の運用益。 */
   investmentGain: number;
   /** 総資産(預金残高 + 投資資産評価額)。 */
