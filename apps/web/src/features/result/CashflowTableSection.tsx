@@ -121,6 +121,11 @@ export function CashflowTableSection() {
 /**
  * CF表のテーブル本体(スクロールコンテナ + `<table>`)。通常表示と全画面表示で共用する。
  * 高さ制限はコンテナに与えるクラス(`containerClassName`)で呼び出し側が決める。
+ *
+ * スクロール方針(#87): テーブルは自前の縦横スクロール box(`overflow-auto`)を持ち、sticky
+ * ヘッダー(西暦・年齢)と左端の項目名列はこの box に対して固定される(daisyUI の pinned rows/cols と
+ * 同じ構造)。box の高さは呼び出し側が `containerClassName`(通常 `max-h-*`、全画面 `flex-1`)で決める。
+ * これにより CF表の横幅は結果パネル幅に依存せず、表専用の横スクロールで収まる。
  */
 function CashflowTable({
   result,
