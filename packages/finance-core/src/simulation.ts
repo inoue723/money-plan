@@ -168,6 +168,17 @@ const buildPersonPlan = (income: IncomeInput): PersonPlan => {
   return { income, lastWorkEndAge, retirementBonusAge, retirementYearsOfService };
 };
 
+/**
+ * 1 人分(本人 / 配偶者)の当年の iDeCo・小規模企業共済の受取・拠出コンテキスト(#73、金額は万円)。
+ * その名義の枠の集計値で、拠出は控除に、分割取崩は年金合算課税に用いる。
+ */
+interface MutualAidPersonContext {
+  /** その名義の当年の iDeCo・小規模企業共済の拠出額(小規模企業共済等掛金控除の対象)。 */
+  contribution: number;
+  /** その名義の当年の分割取崩(年金受取)の合計額。 */
+  spreadWithdrawal: number;
+}
+
 /** 1 人分の当年収入・税の計算結果(金額はすべて万円)。 */
 interface PersonYearIncome {
   /** 当年の額面収入(会社員は額面給与、個人事業主は事業所得)。就労なしは 0。 */
@@ -184,6 +195,12 @@ interface PersonYearIncome {
   oneTimeOther: number;
   /** 所得税・住民税・社会保険料の内訳(給与/事業 + 年金)。 */
   tax: TaxBreakdown;
+  /**
+   * iDeCo・小規模企業共済の分割取崩(年金受取)を公的年金収入に合算して課税したときの、
+   * 取崩額ぶんの増分税(所得税 + 住民税の合計・万円、#73)。取崩額(gross)から差し引いて預金に入れる。
+   * この税は年金分の税(`tax`)には含めない(取崩は投資 CF 側で純額化するため)。
+   */
+  pensionWithdrawalTax: number;
   /** 当年に退職金を計上したか(イベント名表示用)。 */
   retiredThisYear: boolean;
 }
@@ -199,8 +216,16 @@ const calcPersonYearIncome = (
   plan: PersonPlan,
   age: number,
   deduction: PersonalDeductionOptions,
+  mutualAid: MutualAidPersonContext,
 ): PersonYearIncome => {
   const { income, lastWorkEndAge, retirementBonusAge, retirementYearsOfService } = plan;
+
+  // 小規模企業共済等掛金控除(#73): この名義の iDeCo・小規模企業共済の当年拠出額を全額所得控除する。
+  // 該当名義が持つ給与/事業/年金いずれの課税所得計算にも適用する(所得税・住民税とも)。
+  const deductionWithMutualAid: PersonalDeductionOptions = {
+    ...deduction,
+    smallBusinessMutualAidDeduction: mutualAid.contribution,
+  };
 
   // 当年の働き方期間(該当なし = 無収入期間)。収入は期間の開始年齢を基準に複利成長する。
   const workPeriod = activeWorkPeriod(income.workPeriods, age);
@@ -213,12 +238,12 @@ const calcPersonYearIncome = (
   if (workPeriod && grossSalary > 0) {
     if (workPeriod.workStyle === 'employee') {
       // 会社員: 給与所得控除 + 健康保険・厚生年金・雇用保険。
-      const r = calcSalaryTax({ grossSalary, age, ...deduction });
+      const r = calcSalaryTax({ grossSalary, age, ...deductionWithMutualAid });
       tax = addTaxBreakdown(tax, r.breakdown);
       salaryNet += r.netSalary;
     } else {
       // 個人事業主: 青色申告特別控除 + 国民健康保険・国民年金(雇用保険なし)。
-      const r = calcSelfEmployedTax({ businessIncome: grossSalary, age, ...deduction });
+      const r = calcSelfEmployedTax({ businessIncome: grossSalary, age, ...deductionWithMutualAid });
       tax = addTaxBreakdown(tax, r.breakdown);
       salaryNet += r.netIncome;
     }
@@ -227,17 +252,39 @@ const calcPersonYearIncome = (
   // 公的年金は全就労期間の終了翌年から受給する(働き方期間が無い場合は起点から受給)。
   // 額面(pensionGross)は給与と同じく収入内訳へ、年金分の所得税・住民税は税内訳へ計上する(#79)。
   // 手取り(pensionNet)は手取り収入・年間収支の算出にのみ用いる(収入内訳には出さない)。
+  const receivingPension = age > lastWorkEndAge && income.pension > 0;
+  const basePension = receivingPension ? income.pension : 0;
   let pensionGross = 0;
   let pensionNet = 0;
-  if (age > lastWorkEndAge && income.pension > 0) {
-    const pensionTax = calcPensionTax({ pension: income.pension, age, ...deduction });
+  let basePensionIncomeTax = 0;
+  let basePensionResidentTax = 0;
+  if (receivingPension) {
+    const pensionTax = calcPensionTax({ pension: basePension, age, ...deductionWithMutualAid });
     tax = addTaxBreakdown(tax, {
       ...emptyTaxBreakdown(),
       incomeTax: pensionTax.incomeTax,
       residentTax: pensionTax.residentTax,
     });
-    pensionGross = income.pension;
+    pensionGross = basePension;
     pensionNet = pensionTax.netPension;
+    basePensionIncomeTax = pensionTax.incomeTax;
+    basePensionResidentTax = pensionTax.residentTax;
+  }
+
+  // 分割取崩(spread)= 年金受取(#73): その年の受取額を公的年金収入に合算し、公的年金等控除つきで課税する。
+  // 受取額ぶんの税は「(基礎年金 + 受取額)の年金税 − 基礎年金のみの年金税」の増分とする。基礎年金が無い年でも
+  // 受取額を単独の公的年金収入として課税する。この増分税は取崩額(gross)から差し引いて預金に入れる。
+  // ※簡易化: 基礎年金が無い年に給与等がある場合でも受取額は公的年金として別枠課税する(基礎控除等の二重適用は許容)。
+  let pensionWithdrawalTax = 0;
+  if (mutualAid.spreadWithdrawal > 0) {
+    const combined = calcPensionTax({
+      pension: basePension + mutualAid.spreadWithdrawal,
+      age,
+      ...deductionWithMutualAid,
+    });
+    const incomeTaxDelta = Math.max(0, combined.incomeTax - basePensionIncomeTax);
+    const residentTaxDelta = Math.max(0, combined.residentTax - basePensionResidentTax);
+    pensionWithdrawalTax = incomeTaxDelta + residentTaxDelta;
   }
 
   // その他収入(手取り扱い): 固定のその他収入(経常)と退職金(一時)を分けて返す。
@@ -263,6 +310,7 @@ const calcPersonYearIncome = (
     recurringOther,
     oneTimeOther,
     tax,
+    pensionWithdrawalTax,
     retiredThisYear,
   };
 };
@@ -334,6 +382,31 @@ export function runSimulation(input: SimulationInput): SimulationResult {
     }
 
     // =========================================================================
+    // 投資(積立・運用・取崩)を先に評価する(#73)。
+    // iDeCo・小規模企業共済の当年拠出額は小規模企業共済等掛金控除として税計算に、分割取崩は年金合算課税に
+    // 用いるため、収入・税より前に確定させる(投資計算は当年の収入・支出に依存しない)。取崩額そのものの
+    // 預金への反映(手取り化)は後段の集計で行う。
+    // =========================================================================
+    const invStep = stepInvestment(investmentState, { age, investment, monthFactor });
+    investmentState = invStep.state;
+
+    // NISA 上限で積立の一部が停止した最初の年に注記する(結果側での可視化。表現は #26 側に委ねる)。
+    if (!nisaCapNotified && invStep.uninvested > 0) {
+      eventNames.push('NISA上限到達');
+      nisaCapNotified = true;
+    }
+
+    // iDeCo・小規模企業共済の名義ごとの拠出額(控除)・分割取崩額(年金合算課税)を取り出す(#73)。
+    const selfMutualAid: MutualAidPersonContext = {
+      contribution: invStep.mutualAidContributionByOwner.self,
+      spreadWithdrawal: invStep.mutualAidSpreadByOwner.self,
+    };
+    const spouseMutualAid: MutualAidPersonContext = {
+      contribution: invStep.mutualAidContributionByOwner.spouse,
+      spreadWithdrawal: invStep.mutualAidSpreadByOwner.spouse,
+    };
+
+    // =========================================================================
     // 1. 収入 + 2. 税 → 手取り(本人・配偶者)
     // =========================================================================
     // 配偶者(#49)の当年収入・税を先に計算する。配偶者控除の判定に配偶者の当年額面収入を
@@ -341,7 +414,7 @@ export function runSimulation(input: SimulationInput): SimulationResult {
     const spouseAge = spouseBaseAge !== undefined ? spouseBaseAge + i : undefined;
     const spouseYear =
       spousePlan && spouseAge !== undefined
-        ? calcPersonYearIncome(spousePlan, spouseAge, {})
+        ? calcPersonYearIncome(spousePlan, spouseAge, {}, spouseMutualAid)
         : undefined;
     const spouseSalary = spouseYear ? spouseYear.grossSalary : 0;
 
@@ -352,7 +425,12 @@ export function runSimulation(input: SimulationInput): SimulationResult {
       .map(dependentCategoryForAge)
       .filter((c): c is DependentCategory => c !== undefined);
 
-    const selfYear = calcPersonYearIncome(selfPlan, age, { hasSpouseDeduction, dependents });
+    const selfYear = calcPersonYearIncome(
+      selfPlan,
+      age,
+      { hasSpouseDeduction, dependents },
+      selfMutualAid,
+    );
 
     // 本人 + 配偶者を合算する。控除内訳・手取り・年金手取りはそれぞれ両者の和とする。
     // 経常収支(額面・手取り・年金手取り・税・固定その他)は初年のみ月割係数で按分する(#51)。
@@ -480,16 +558,22 @@ export function runSimulation(input: SimulationInput): SimulationResult {
     const totalExpense = (rent ?? 0) + itemsTotal + education + loan + eventExpense;
 
     // =========================================================================
-    // 4. 投資(積立・運用・取崩・課税)
+    // 4. 投資の受取課税(iDeCo・小規模企業共済。#73)
     // =========================================================================
-    const invStep = stepInvestment(investmentState, { age, investment, monthFactor });
-    investmentState = invStep.state;
-
-    // NISA 上限で積立の一部が停止した最初の年に注記する(結果側での可視化。表現は #26 側に委ねる)。
-    if (!nisaCapNotified && invStep.uninvested > 0) {
-      eventNames.push('NISA上限到達');
-      nisaCapNotified = true;
+    // 投資の積立・運用・取崩(invStep)はループ冒頭で評価済み。ここでは iDeCo・小規模企業共済の
+    // 受取に対する課税額を確定させ、取崩額(gross)から差し引いて預金に入れる。
+    //  - 分割取崩(spread)= 年金合算課税の増分税(本人・配偶者。calcPersonYearIncome で算出済み)。
+    //  - 一括取崩(lumpSum)= 一時金の退職所得課税(退職所得控除・1/2課税・分離課税を #19 の関数で共用)。
+    //    勤続年数はその枠の拠出年数(積立開始年齢〜受取年齢)とみなす。退職金と同年受取の控除枠調整は行わない(簡易化)。
+    const pensionWithdrawalTax =
+      selfYear.pensionWithdrawalTax + (spouseYear ? spouseYear.pensionWithdrawalTax : 0);
+    let lumpSumWithdrawalTax = 0;
+    for (const ls of invStep.mutualAidLumpSums) {
+      const r = calcRetirementTax({ retirementBonus: ls.amount, yearsOfService: ls.yearsOfService });
+      lumpSumWithdrawalTax += r.incomeTax + r.residentTax;
     }
+    // iDeCo・小規模企業共済の受取に伴う税の合計(投資 CF 側で取崩額から差し引く)。
+    const mutualAidWithdrawalTax = pensionWithdrawalTax + lumpSumWithdrawalTax;
 
     // =========================================================================
     // 集計(SPEC.md 2.3.1)
@@ -498,8 +582,9 @@ export function runSimulation(input: SimulationInput): SimulationResult {
     // 上限で積み立てられなかった分(invStep.uninvested)は積立額に含まれないため、自動的に預金に残る。
     const balance = netIncome + otherIncome - totalExpense - invStep.contribution;
 
-    // 預金残高 = 前年 + 年間収支 + 投資取崩額(取崩は運用益課税を差し引いた手取り)。
-    savings += balance + (invStep.withdrawal - invStep.tax);
+    // 預金残高 = 前年 + 年間収支 + 投資取崩額(取崩は課税を差し引いた手取り)。
+    // invStep.tax は課税口座の運用益課税、mutualAidWithdrawalTax は iDeCo・小規模企業共済の受取課税(#73)。
+    savings += balance + (invStep.withdrawal - invStep.tax - mutualAidWithdrawalTax);
 
     const investmentValue = invStep.investmentValue;
     const totalAssets = savings + investmentValue;

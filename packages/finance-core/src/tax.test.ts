@@ -356,3 +356,54 @@ describe('退職所得(退職金の退職所得控除・分離課税)', () => {
     expect(netRetirementBonus).toBeCloseTo(1797.0716, 4);
   });
 });
+
+describe('小規模企業共済等掛金控除(iDeCo・小規模企業共済の拠出。#73)', () => {
+  it('給与所得者: 拠出額の分だけ所得税・住民税が下がり、手取りが増える', () => {
+    const without = calcSalaryTax({ grossSalary: 700 });
+    const withDeduction = calcSalaryTax({ grossSalary: 700, smallBusinessMutualAidDeduction: 27.6 });
+    expect(withDeduction.breakdown.incomeTax).toBeLessThan(without.breakdown.incomeTax);
+    expect(withDeduction.breakdown.residentTax).toBeLessThan(without.breakdown.residentTax);
+    expect(withDeduction.netSalary).toBeGreaterThan(without.netSalary);
+  });
+
+  it('給与所得者: 住民税は控除額 27.6 万 × 所得割 10% = 2.76 万だけ下がる(課税所得が正の範囲)', () => {
+    const without = calcSalaryTax({ grossSalary: 700 });
+    const withDeduction = calcSalaryTax({ grossSalary: 700, smallBusinessMutualAidDeduction: 27.6 });
+    // 住民税所得割は 10% 定率のため、控除額 × 10% ぶんだけ減る(課税所得が控除後も正)。
+    expect(without.breakdown.residentTax - withDeduction.breakdown.residentTax).toBeCloseTo(2.76, 6);
+  });
+
+  it('個人事業主: 拠出額の分だけ所得税・住民税が下がる', () => {
+    const without = calcSelfEmployedTax({ businessIncome: 700 });
+    const withDeduction = calcSelfEmployedTax({
+      businessIncome: 700,
+      smallBusinessMutualAidDeduction: 60,
+    });
+    expect(withDeduction.breakdown.incomeTax).toBeLessThan(without.breakdown.incomeTax);
+    expect(withDeduction.breakdown.residentTax).toBeLessThan(without.breakdown.residentTax);
+    expect(withDeduction.netIncome).toBeGreaterThan(without.netIncome);
+  });
+
+  it('年金受給: 拠出控除で年金の所得税・住民税が下がる', () => {
+    const without = calcPensionTax({ pension: 250, age: 68 });
+    const withDeduction = calcPensionTax({
+      pension: 250,
+      age: 68,
+      smallBusinessMutualAidDeduction: 20,
+    });
+    expect(withDeduction.incomeTax).toBeLessThanOrEqual(without.incomeTax);
+    expect(withDeduction.residentTax).toBeLessThanOrEqual(without.residentTax);
+    expect(withDeduction.netPension).toBeGreaterThanOrEqual(without.netPension);
+    // いずれかの税は実際に減る(課税所得が正の範囲)。
+    expect(
+      withDeduction.incomeTax + withDeduction.residentTax,
+    ).toBeLessThan(without.incomeTax + without.residentTax);
+  });
+
+  it('未指定・0 のときは控除なし(従来挙動と一致)', () => {
+    const base = calcSalaryTax({ grossSalary: 700 });
+    const zero = calcSalaryTax({ grossSalary: 700, smallBusinessMutualAidDeduction: 0 });
+    expect(zero.breakdown.incomeTax).toBe(base.breakdown.incomeTax);
+    expect(zero.breakdown.residentTax).toBe(base.breakdown.residentTax);
+  });
+});

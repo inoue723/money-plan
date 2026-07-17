@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
 import { runSimulation } from './simulation';
+import { calcRetirementTax } from './tax';
 import type {
   EducationPlan,
   ExpenseItem,
+  InvestmentAccount,
   LifeEvent,
   SimulationInput,
   WorkPeriod,
@@ -1144,5 +1146,164 @@ describe('runSimulation - 計算開始年月と初年の月割(#51)', () => {
     const y1 = result[1]!;
     expect(y0.income.childAllowance).toBeGreaterThan(0);
     expect(y0.income.childAllowance).toBeCloseTo(y1.income.childAllowance / 2);
+  });
+});
+
+describe('runSimulation - iDeCo・小規模企業共済(#73)', () => {
+  /** 投資枠を1つ作る(必要な項目だけ上書き)。 */
+  const account = (overrides: Partial<InvestmentAccount> = {}): InvestmentAccount => ({
+    name: 'x',
+    accountType: 'ideco',
+    owner: 'self',
+    initialHolding: 0,
+    monthlyAmount: 0,
+    annualReturn: 0,
+    startAge: 30,
+    endAge: 65,
+    withdrawals: [],
+    ...overrides,
+  });
+
+  it('拠出すると本人の所得税・住民税が下がる(小規模企業共済等掛金控除)', () => {
+    // 同じ拠出額(月2万=年24万)を NISA と iDeCo で比較する。iDeCo は拠出が全額所得控除になる。
+    const nisa = runSimulation(
+      baseInput({
+        investment: { accounts: [account({ accountType: 'nisa', monthlyAmount: 2 })] },
+      }),
+    )[0]!;
+    const ideco = runSimulation(
+      baseInput({
+        investment: { accounts: [account({ accountType: 'ideco', monthlyAmount: 2 })] },
+      }),
+    )[0]!;
+
+    // 完了条件: iDeCo 拠出で所得税・住民税が下がる。
+    expect(ideco.tax.incomeTax).toBeLessThan(nisa.tax.incomeTax);
+    expect(ideco.tax.residentTax).toBeLessThan(nisa.tax.residentTax);
+    // 住民税は控除額 24 万 × 所得割 10% = 2.4 万だけ下がる(課税所得が控除後も正)。
+    expect(nisa.tax.residentTax - ideco.tax.residentTax).toBeCloseTo(2.4, 6);
+    // 拠出額は同じで税が軽い分、手取りが増え預金も多い。
+    expect(ideco.savings).toBeGreaterThan(nisa.savings);
+  });
+
+  it('小規模企業共済も拠出が所得控除になる(iDeCo と同じ税制)', () => {
+    const nisa = runSimulation(
+      baseInput({
+        investment: { accounts: [account({ accountType: 'nisa', monthlyAmount: 3 })] },
+      }),
+    )[0]!;
+    const mutualAid = runSimulation(
+      baseInput({
+        investment: { accounts: [account({ accountType: 'mutualAid', monthlyAmount: 3 })] },
+      }),
+    )[0]!;
+    expect(mutualAid.tax.incomeTax).toBeLessThan(nisa.tax.incomeTax);
+    expect(mutualAid.tax.residentTax).toBeLessThan(nisa.tax.residentTax);
+  });
+
+  it('一括取崩は退職所得課税され、税引後額が預金に入る', () => {
+    // 無収入・無支出で、iDeCo の初期保有 3000 万を 65 歳に一括受取する。
+    const result = runSimulation(
+      baseInput({
+        basic: { currentAge: 30, endAge: 66, savings: 0 },
+        income: { workPeriods: [], retirementBonus: 0, pension: 0, other: 0 },
+        expense: { items: [] },
+        investment: {
+          accounts: [
+            account({
+              accountType: 'ideco',
+              initialHolding: 3000,
+              acquisitionCost: 3000,
+              startAge: 60,
+              endAge: 65,
+              withdrawals: [{ type: 'lumpSum', age: 65, amount: 3000 }],
+            }),
+          ],
+        },
+      }),
+    );
+    const before = result.find((r) => r.age === 64)!;
+    const at = result.find((r) => r.age === 65)!;
+
+    // 受取前は無収入・無支出のため預金 0、投資資産 3000。
+    expect(before.savings).toBeCloseTo(0, 6);
+    expect(before.investmentValue).toBeCloseTo(3000, 6);
+
+    // 勤続年数 = 受取65 − 積立開始60 = 5年 → 退職所得控除で簡易課税された税引後額が預金に入る。
+    const expected = calcRetirementTax({ retirementBonus: 3000, yearsOfService: 5 });
+    expect(at.savings).toBeCloseTo(expected.netRetirementBonus, 4);
+    expect(at.investmentValue).toBeCloseTo(0, 6);
+    // 課税されている(税引後 < 額面)。
+    expect(at.savings).toBeLessThan(3000);
+  });
+
+  it('分割取崩は年金収入と合算して課税される(NISA の分割取崩より手取りが少ない)', () => {
+    const common: Partial<SimulationInput> = {
+      basic: { currentAge: 60, endAge: 90, savings: 0 },
+      income: {
+        workPeriods: [workPeriod({ startAge: 60, endAge: 64 })],
+        retirementBonus: 0,
+        pension: 300, // 年金 300 万(合算で課税水準になる)
+        other: 0,
+      },
+      expense: { items: [] },
+    };
+    const withdrawals: InvestmentAccount['withdrawals'] = [
+      { type: 'spread', startAge: 66, endAge: 85 },
+    ];
+    const accountFields = {
+      initialHolding: 2000,
+      acquisitionCost: 2000,
+      startAge: 60,
+      endAge: 65,
+      withdrawals,
+    };
+
+    const ideco = runSimulation(
+      baseInput({
+        ...common,
+        investment: { accounts: [account({ accountType: 'ideco', ...accountFields })] },
+      }),
+    );
+    const nisa = runSimulation(
+      baseInput({
+        ...common,
+        investment: { accounts: [account({ accountType: 'nisa', ...accountFields })] },
+      }),
+    );
+
+    const idecoAt = ideco.find((r) => r.age === 70)!;
+    const nisaAt = nisa.find((r) => r.age === 70)!;
+
+    // 取崩の運用は同一(利回り0・拠出0・初期額同じ)なので投資評価額は一致する。
+    expect(idecoAt.investmentValue).toBeCloseTo(nisaAt.investmentValue, 6);
+    // iDeCo の分割取崩は年金合算課税されるぶん、NISA(非課税)より預金が少ない。
+    expect(idecoAt.savings).toBeLessThan(nisaAt.savings);
+  });
+
+  it('iDeCo は NISA の生涯・年間投資枠を消費しない(NISA 枠は満額使える)', () => {
+    // iDeCo で年 480 万(NISA 年間枠超)を拠出しても、別の NISA 枠は満額積み立てられる。
+    const result = runSimulation(
+      baseInput({
+        basic: { currentAge: 30, endAge: 31, savings: 10000 },
+        income: {
+          workPeriods: [workPeriod({ income: 2000, raiseRate: 0 })],
+          retirementBonus: 0,
+          pension: 0,
+          other: 0,
+        },
+        investment: {
+          accounts: [
+            account({ accountType: 'ideco', monthlyAmount: 40 }), // 年 480 万
+            account({ name: 'NISA', accountType: 'nisa', monthlyAmount: 30 }), // 年 360 万(年間枠上限)
+          ],
+        },
+      }),
+    );
+    const y0 = result[0]!;
+    // iDeCo 480 + NISA 360 = 840 万を満額積み立てる(NISA 上限に iDeCo は影響しない)。
+    expect(y0.investmentContribution).toBeCloseTo(840, 6);
+    // NISA 上限到達の注記も出ない。
+    expect(y0.events).not.toContain('NISA上限到達');
   });
 });
