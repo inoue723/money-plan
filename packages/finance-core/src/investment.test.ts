@@ -1,7 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
 import { CAPITAL_GAINS_TAX_RATE, NISA_ANNUAL_LIMIT, NISA_LIFETIME_LIMIT } from './constants';
-import { initInvestmentState, stepInvestment, type InvestmentState } from './investment';
+import {
+  initInvestmentState,
+  investmentAccountValuesBeforeWithdrawal,
+  stepInvestment,
+  type InvestmentState,
+} from './investment';
 import type { InvestmentAccount, InvestmentInput } from './types';
 
 /** テスト用の投資枠を作る(必要な項目だけ上書き)。 */
@@ -917,5 +922,141 @@ describe('stepInvestment - 名義ごとの NISA 上限(#52)', () => {
       self: NISA_LIFETIME_LIMIT,
       spouse: 120,
     });
+  });
+});
+
+describe('stepInvestment の accountValuesBeforeWithdrawal(取崩前評価額。#72)', () => {
+  it('取崩処理の適用前(運用成長後)の枠評価額を返す。取崩後の state.value より大きい', () => {
+    // 課税枠: 初期保有 1000 万・利回り 10%・当年に 200 万を一括取崩。
+    const prev = initInvestmentState([makeAccount({ accountType: 'taxable', initialHolding: 1000 })]);
+    const investment = oneAccount({
+      accountType: 'taxable',
+      initialHolding: 1000,
+      annualReturn: 10,
+      startAge: 30,
+      endAge: 30, // 積立なし
+      withdrawals: [{ type: 'lumpSum', age: 31, amount: 200 }],
+    });
+
+    const result = stepInvestment(prev, { age: 31, investment });
+
+    // 成長後 = 1000 × 1.10 = 1100(取崩前)。
+    expect(result.accountValuesBeforeWithdrawal).toHaveLength(1);
+    expect(result.accountValuesBeforeWithdrawal[0]!).toBeCloseTo(1100, 6);
+    // 取崩後の評価額は 1100 − 200 = 900 で、取崩前より小さい。
+    expect(result.state.accounts[0]!.value).toBeCloseTo(900, 6);
+    expect(result.withdrawal).toBeCloseTo(200, 6);
+  });
+
+  it('accounts と同順・同数の配列を返す', () => {
+    const prev = initInvestmentState([
+      makeAccount({ accountType: 'taxable', initialHolding: 1000 }),
+      makeAccount({ accountType: 'taxable', initialHolding: 500 }),
+    ]);
+    const investment: InvestmentInput = {
+      accounts: [
+        makeAccount({ accountType: 'taxable', initialHolding: 1000, annualReturn: 0 }),
+        makeAccount({ accountType: 'taxable', initialHolding: 500, annualReturn: 0 }),
+      ],
+    };
+    const result = stepInvestment(prev, { age: 40, investment });
+    expect(result.accountValuesBeforeWithdrawal).toEqual([1000, 500]);
+  });
+});
+
+describe('investmentAccountValuesBeforeWithdrawal(年次評価額ヘルパ。#72)', () => {
+  it('currentAge〜endAge の各年について、取崩適用前の枠評価額を返す', () => {
+    // 課税枠: 初期保有 1000 万・利回り 10%・積立なし・31 歳で 200 万を一括取崩。
+    const investment = oneAccount({
+      accountType: 'taxable',
+      initialHolding: 1000,
+      annualReturn: 10,
+      startAge: 30,
+      endAge: 30,
+      withdrawals: [{ type: 'lumpSum', age: 31, amount: 200 }],
+    });
+
+    const series = investmentAccountValuesBeforeWithdrawal({
+      investment,
+      currentAge: 30,
+      endAge: 32,
+    });
+
+    expect(series.map((s) => s.age)).toEqual([30, 31, 32]);
+    // 30 歳: 1000 × 1.10 = 1100。
+    expect(series[0]!.values[0]!).toBeCloseTo(1100, 6);
+    // 31 歳: 1100 × 1.10 = 1210(200 万の取崩を差し引く「前」の値)。
+    expect(series[1]!.values[0]!).toBeCloseTo(1210, 6);
+    // 32 歳: 前年の取崩(−200)を反映した残高 1010 が成長 → 1010 × 1.10 = 1111。
+    expect(series[2]!.values[0]!).toBeCloseTo(1111, 6);
+  });
+
+  it('同一枠の他の取り崩し設定(分割取崩)を反映した評価額になる', () => {
+    // 30 歳時点 1000 万・利回り 0%。30〜31 歳の分割取崩で毎年残高を均等取崩し。
+    const investment = oneAccount({
+      accountType: 'taxable',
+      initialHolding: 1000,
+      annualReturn: 0,
+      startAge: 30,
+      endAge: 30,
+      withdrawals: [{ type: 'spread', startAge: 30, endAge: 31 }],
+    });
+
+    const series = investmentAccountValuesBeforeWithdrawal({
+      investment,
+      currentAge: 30,
+      endAge: 32,
+    });
+
+    // 30 歳: 取崩前は 1000(この年 500 取崩 → 残 500)。
+    expect(series[0]!.values[0]!).toBeCloseTo(1000, 6);
+    // 31 歳: 前年の分割取崩を反映して取崩前は 500(この年に残額 500 を取崩 → 残 0)。
+    expect(series[1]!.values[0]!).toBeCloseTo(500, 6);
+    // 32 歳: 期間末に残高 0。
+    expect(series[2]!.values[0]!).toBeCloseTo(0, 6);
+  });
+
+  it('複数枠は accounts と同順・同数の values を返す(枠は独立運用)', () => {
+    const investment: InvestmentInput = {
+      accounts: [
+        makeAccount({ accountType: 'taxable', initialHolding: 1000, annualReturn: 0 }),
+        makeAccount({ accountType: 'taxable', initialHolding: 500, annualReturn: 0 }),
+      ],
+    };
+    const series = investmentAccountValuesBeforeWithdrawal({
+      investment,
+      currentAge: 30,
+      endAge: 31,
+    });
+    expect(series).toHaveLength(2);
+    expect(series[0]!.values).toEqual([1000, 500]);
+    expect(series[1]!.values).toEqual([1000, 500]);
+  });
+
+  it('endAge < currentAge の場合は空配列を返す', () => {
+    const investment = oneAccount({ accountType: 'taxable', initialHolding: 1000 });
+    expect(
+      investmentAccountValuesBeforeWithdrawal({ investment, currentAge: 40, endAge: 39 }),
+    ).toEqual([]);
+  });
+
+  it('startMonth(初年の月割。#51)を運用成長に反映する', () => {
+    // 7 月開始 → 初年は 6 ヶ月分(monthFactor 0.5)だけ運用益を計上する。
+    const investment = oneAccount({
+      accountType: 'taxable',
+      initialHolding: 1000,
+      annualReturn: 10,
+      startAge: 30,
+      endAge: 30,
+      withdrawals: [],
+    });
+    const series = investmentAccountValuesBeforeWithdrawal({
+      investment,
+      currentAge: 30,
+      endAge: 30,
+      startMonth: 7,
+    });
+    // 初年は成長益が半分: 1000 × (1 + 0.10 × 0.5) = 1050。
+    expect(series[0]!.values[0]!).toBeCloseTo(1050, 6);
   });
 });

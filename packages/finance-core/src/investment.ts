@@ -154,6 +154,12 @@ export interface InvestmentStepResult {
   tax: number;
   /** 当年末の投資資産評価額(全枠合計・万円)。 */
   investmentValue: number;
+  /**
+   * 各投資枠の当年の運用成長後・取崩処理適用前の評価額(万円、#72)。
+   * `investment.accounts` と同順・同数。当年の取り崩しを差し引く前の枠ごとの評価額で、
+   * 一括取崩の対象年齢に対する「その時点の枠評価額」表示(tooltip)などに用いる。
+   */
+  accountValuesBeforeWithdrawal: number[];
 }
 
 /** 1 つの枠の 1 ステップ計算パラメータ(内部用)。 */
@@ -174,6 +180,11 @@ interface AccountStepResult {
   uninvested: number;
   withdrawal: number;
   tax: number;
+  /**
+   * 当年の運用成長後・取崩処理適用前の評価額(万円、#72)。
+   * = (前年評価額 + 当年積立額) × (1 + 利回り)。当年の取り崩し(spread / lumpSum)を差し引く前の値。
+   */
+  valueBeforeWithdrawal: number;
 }
 
 /** 空の枠state。 */
@@ -309,6 +320,7 @@ const stepAccount = (prev: AccountState, params: AccountStepParams): AccountStep
     uninvested,
     withdrawal: withdrawalAmount,
     tax,
+    valueBeforeWithdrawal: grownValue,
   };
 };
 
@@ -338,6 +350,7 @@ export const stepInvestment = (
   }
 
   const newAccountStates: AccountState[] = [];
+  const accountValuesBeforeWithdrawal: number[] = [];
   let totalGain = 0;
   let totalContribution = 0;
   let totalUninvested = 0;
@@ -365,6 +378,7 @@ export const stepInvestment = (
     }
 
     newAccountStates.push(step.state);
+    accountValuesBeforeWithdrawal.push(step.valueBeforeWithdrawal);
     totalGain += step.gain;
     totalContribution += step.contribution;
     totalUninvested += step.uninvested;
@@ -390,5 +404,60 @@ export const stepInvestment = (
     withdrawal: totalWithdrawal,
     tax: totalTax,
     investmentValue: totalValue,
+    accountValuesBeforeWithdrawal,
   };
+};
+
+/** 投資枠の年次評価額(1 年分。#72)。 */
+export interface AccountValuesAtAge {
+  /** 当年の本人年齢(歳)。 */
+  age: number;
+  /**
+   * その年の各投資枠の運用成長後・取崩処理適用前の評価額(万円)。
+   * `investment.accounts` と同順・同数。
+   */
+  values: number[];
+}
+
+/**
+ * 各投資枠の「運用成長後・取崩処理適用前」の年次評価額を、現在年齢から `endAge` まで求める(#72)。
+ *
+ * `runSimulation` と同じ年次ステップ(`stepInvestment`)・同じ月割ロジック(#51)を再利用するため、
+ * ここで得られる評価額はシミュレーション本体の投資計算と整合する。各枠は独立に運用され、同一名義の
+ * NISA 枠には投資上限が適用される点も本体と同じ(現在の入力全体を反映した値になる)。
+ *
+ * 「取崩処理適用前」は当年の spread / lumpSum いずれも差し引く前の値を意味する。前年までの取り崩し
+ * (同一枠の他の取り崩し設定を含む)は state を通じて反映される。一括取崩の対象年齢に対する
+ * 「その年齢時点の枠評価額」表示に用いる。
+ *
+ * @returns 年ごとに 1 要素の配列(`endAge < currentAge` の場合は空配列)。各要素の `values` は
+ *   `investment.accounts` と同順・同数。
+ */
+export const investmentAccountValuesBeforeWithdrawal = (params: {
+  investment: InvestmentInput;
+  /** シミュレーション起点の本人年齢(歳)。 */
+  currentAge: number;
+  /** シミュレーション終了年齢(歳)。 */
+  endAge: number;
+  /**
+   * 計算開始月(1〜12、#51)。初年はこの月から 12 月までを月割で計上する(積立・運用益に按分)。
+   * 未指定なら月割なし(初年もフル 12 ヶ月。`runSimulation` と同じ既定挙動)。
+   */
+  startMonth?: number;
+}): AccountValuesAtAge[] => {
+  const { investment, currentAge, endAge, startMonth } = params;
+  // 初年の月数(#51)。simulation.ts と同じ式で求める(startMonth を 1〜12 にクランプ)。
+  const firstYearMonths =
+    startMonth != null ? 13 - Math.min(12, Math.max(1, Math.round(startMonth))) : 12;
+
+  const series: AccountValuesAtAge[] = [];
+  let state = initInvestmentState(investment.accounts);
+  for (let i = 0; currentAge + i <= endAge; i++) {
+    const age = currentAge + i;
+    const monthFactor = i === 0 ? firstYearMonths / 12 : 1;
+    const step = stepInvestment(state, { age, investment, monthFactor });
+    series.push({ age, values: step.accountValuesBeforeWithdrawal });
+    state = step.state;
+  }
+  return series;
 };

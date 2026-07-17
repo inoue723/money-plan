@@ -27,5 +27,12 @@ export {
 // 投資枠のバリデーション補助(NISA 枠の初期保有額合計を求める。UI の上限警告に使う)。
 export { nisaInitialLifetimeUsage } from './investment';
 
+// 投資枠の年次評価額(運用成長後・取崩適用前)を求めるヘルパ(#72)。
+// 一括取崩の対象年齢に対する「その時点の枠評価額」表示に使う。
+export {
+  investmentAccountValuesBeforeWithdrawal,
+  type AccountValuesAtAge,
+} from './investment';
+
 /** workspace 依存の疎通確認用ダミー関数。 */
 export const ping = (): string => 'pong';

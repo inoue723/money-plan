@@ -10,17 +10,24 @@
  * 一括取崩(指定年齢に指定額)の 2 種類をリストで追加・削除する。期間・年齢が重複する設定は
  * 警告を表示するが、保存は妨げない(計算側は定義順に順次適用する)。
  */
+import { useMemo } from 'react';
 import type {
   AccountOwner,
   AccountType,
+  Child,
   InvestmentAccount,
   WithdrawalSetting,
 } from '@money-plan/finance-core';
-import { NISA_LIFETIME_LIMIT, nisaInitialLifetimeUsage } from '@money-plan/finance-core';
+import {
+  investmentAccountValuesBeforeWithdrawal,
+  NISA_LIFETIME_LIMIT,
+  nisaInitialLifetimeUsage,
+} from '@money-plan/finance-core';
 import { useSimulationStore } from '../../stores/simulationStore';
 import { NumberField } from '../../components/NumberField';
 import { AgeNumberField } from '../../components/AgeNumberField';
 import { SelectField } from '../../components/SelectField';
+import { formatChildAgeLines } from '../../components/childAges';
 
 const ACCOUNT_TYPE_OPTIONS: { value: AccountType; label: string }[] = [
   { value: 'nisa', label: 'NISA(非課税)' },
@@ -115,12 +122,36 @@ const overlapWarning = (withdrawals: WithdrawalSetting[], index: number): string
 };
 
 export function InvestmentSection() {
-  const accounts = useSimulationStore((s) => s.input.investment.accounts);
+  const investment = useSimulationStore((s) => s.input.investment);
+  const accounts = investment.accounts;
   const currentAge = useSimulationStore((s) => s.input.basic.currentAge);
   // 取り崩し設定の既定値(分割取崩の終了年齢)に使う(#69)。
   const planEndAge = useSimulationStore((s) => s.input.basic.endAge);
+  // 一括取崩の対象年齢 tooltip 用の月割起点(#72 / #51)。
+  const startMonth = useSimulationStore((s) => s.input.basic.startMonth);
+  // 一括取崩の対象年齢 tooltip に子どもの年齢も併記する(#47 の挙動を維持)。
+  const children = useSimulationStore((s) => s.input.family.children);
   const hasSpouse = useSimulationStore((s) => s.input.family.spouse !== undefined);
   const setInvestment = useSimulationStore((s) => s.setInvestment);
+
+  // 各投資枠の「運用成長後・取崩処理適用前」の年次評価額(#72)。現在の入力全体
+  // (他の取り崩し設定・NISA 上限を含む)を反映してシミュレーション本体と同じ計算で求める。
+  // 一括取崩の対象年齢欄の tooltip 表示に使う(入力変更→即時再計算のパイプラインに乗る)。
+  const valueSeries = useMemo(
+    () =>
+      investmentAccountValuesBeforeWithdrawal({
+        investment,
+        currentAge,
+        endAge: planEndAge,
+        startMonth,
+      }),
+    [investment, currentAge, planEndAge, startMonth],
+  );
+
+  // 枠 index と年齢から、その年齢時点(取崩適用前)の枠評価額を引く。
+  // 範囲外(現在年齢未満・終了年齢超)や非対象の年齢は undefined を返す(呼び出し側で「—」表示)。
+  const valueAtAge = (accountIndex: number, age: number): number | undefined =>
+    valueSeries.find((s) => s.age === age)?.values[accountIndex];
 
   const updateAccount = (index: number, next: InvestmentAccount) => {
     setInvestment({ accounts: accounts.map((a, i) => (i === index ? next : a)) });
@@ -175,6 +206,8 @@ export function InvestmentSection() {
           currentAge={currentAge}
           planEndAge={planEndAge}
           hasSpouse={hasSpouse}
+          familyChildren={children}
+          valueAtAge={(age) => valueAtAge(i, age)}
           onChange={(next) => updateAccount(i, next)}
           onRemove={() => removeAccount(i)}
         />
@@ -197,6 +230,8 @@ function AccountFields({
   currentAge,
   planEndAge,
   hasSpouse,
+  familyChildren,
+  valueAtAge,
   onChange,
   onRemove,
 }: {
@@ -205,6 +240,13 @@ function AccountFields({
   /** シミュレーション終了年齢(basic.endAge)。分割取崩の既定の終了年齢に使う(#69)。 */
   planEndAge: number;
   hasSpouse: boolean;
+  /** 子ども一覧(一括取崩の対象年齢 tooltip に子ども年齢を併記する。#47 / #72)。 */
+  familyChildren: Child[];
+  /**
+   * この枠の指定年齢時点(運用成長後・取崩適用前)の評価額を引く(#72)。範囲外は undefined。
+   * 一括取崩の対象年齢欄の tooltip に使う。
+   */
+  valueAtAge: (age: number) => number | undefined;
   onChange: (next: InvestmentAccount) => void;
   onRemove: () => void;
 }) {
@@ -357,6 +399,8 @@ function AccountFields({
               withdrawal={withdrawal}
               currentAge={currentAge}
               planEndAge={planEndAge}
+              familyChildren={familyChildren}
+              valueAtAge={valueAtAge}
               warning={overlapWarning(withdrawals, i)}
               onChange={(next) => updateWithdrawal(i, next)}
               onRemove={() => removeWithdrawal(i)}
@@ -381,6 +425,8 @@ function WithdrawalFields({
   withdrawal,
   currentAge,
   planEndAge,
+  familyChildren,
+  valueAtAge,
   warning,
   onChange,
   onRemove,
@@ -388,6 +434,10 @@ function WithdrawalFields({
   withdrawal: WithdrawalSetting;
   currentAge: number;
   planEndAge: number;
+  /** 子ども一覧(一括取崩の対象年齢 tooltip に子ども年齢を併記する。#47 / #72)。 */
+  familyChildren: Child[];
+  /** この枠の指定年齢時点(取崩適用前)の評価額を引く(#72)。範囲外は undefined。 */
+  valueAtAge: (age: number) => number | undefined;
   /** 他の設定と期間・年齢が重複する場合の警告文(重複がなければ undefined)。 */
   warning?: string;
   onChange: (next: WithdrawalSetting) => void;
@@ -443,13 +493,25 @@ function WithdrawalFields({
           </>
         ) : (
           <>
-            <AgeNumberField
+            <NumberField
               label="対象年齢"
               value={withdrawal.age}
               onChange={(v) => onChange({ ...withdrawal, age: v })}
               min={currentAge}
               max={100}
               unit="歳"
+              focusTooltip={(currentValue) => {
+                // 入力途中で数値にならない場合は tooltip を出さない。
+                if (Number.isNaN(currentValue)) return null;
+                const value = valueAtAge(currentValue);
+                // シミュレーション範囲外(現在年齢未満・終了年齢超)は「—」を表示する(#72)。
+                const valueLine =
+                  value === undefined
+                    ? 'この年齢時点の評価額: —'
+                    : `この年齢時点の評価額: 約${Math.round(value).toLocaleString('ja-JP')}万円`;
+                // #47 の挙動を維持し、子どもがいれば年齢も併記する。
+                return [valueLine, ...formatChildAgeLines(familyChildren, currentValue)].join('\n');
+              }}
             />
             <NumberField
               label="取崩額"
