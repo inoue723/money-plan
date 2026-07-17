@@ -297,6 +297,48 @@ export interface LumpSumWithdrawal {
 export type WithdrawalSetting = SpreadWithdrawal | LumpSumWithdrawal;
 
 /**
+ * 月額積立(積立設定)。指定した年齢期間で、毎月 `monthlyAmount`(万円)を積み立てる。
+ *
+ * 年齢期間は**両端を含む**(`startAge <= 当年年齢 <= endAge`)。他の年齢期間型
+ * (`WorkPeriod` / `ExpensePeriod` / `RentPeriod` / `SpreadWithdrawal`)と同じ両端含む仕様で統一する。
+ * 1 つの投資枠に複数の月額積立を持てるため、年齢によって積立額を変えられる
+ * (例: 40〜45 歳は月 5 万、46〜50 歳は月 1 万)。
+ */
+export interface MonthlyContribution {
+  type: 'monthly';
+  /** 積立開始年齢(歳。この年齢から積み立てる = 両端を含む)。 */
+  startAge: number;
+  /** 積立終了年齢(歳。この年齢まで積み立てる = 両端を含む)。 */
+  endAge: number;
+  /** 毎月の積立額(万円)。 */
+  monthlyAmount: number;
+}
+
+/**
+ * 一括投資(積立設定)。指定した年齢の年に、`amount`(万円)を一度だけ投資する
+ * (例: 40 歳で 1000 万円を一括投資)。一時収支のため、初年の月割(#51)では**按分しない**
+ * (ライフイベント・退職金と同じ扱い)。NISA 枠は年間・生涯の投資上限の対象になる。
+ */
+export interface LumpSumContribution {
+  type: 'lumpSum';
+  /** 投資する年齢(歳)。この年齢の年にのみ適用される。 */
+  age: number;
+  /** 投資額(万円)。 */
+  amount: number;
+}
+
+/**
+ * 投資の積立設定(判別可能union)。`type` フィールドで種別を判別する。
+ *
+ * 1 つの投資枠は複数の積立設定を持てる(`InvestmentAccount.contributions`)。
+ * これにより「年齢によって積立額を変える(月額)」「特定の年齢で一括投資する」を
+ * 同一の投資枠内で表現でき、取り崩しも枠ごとにまとめて設定できる。
+ * 同一年に複数の設定が該当する場合は該当額をすべて合算して投資する
+ * (詳細は `src/investment.ts` の冒頭コメントを参照)。
+ */
+export type ContributionSetting = MonthlyContribution | LumpSumContribution;
+
+/**
  * 投資口座の種別。
  * - 'nisa': 非課税(NISA 上限あり)。運用益は非課税で、生涯 1800 万・年間 360 万の投資枠を消費する。
  * - 'taxable': 課税口座(特定口座等)。取崩時に運用益へ課税する。
@@ -344,14 +386,17 @@ export interface InvestmentAccount {
    *   - 課税枠は取崩時の譲渡益課税の簿価按分に用いる(含み益に正しく課税される)。
    */
   acquisitionCost?: number;
-  /** 毎月の積立額(万円)。デフォルト 0。 */
-  monthlyAmount: number;
   /** 想定利回り(年率 %、0〜15)。デフォルト 3.0。 */
   annualReturn: number;
-  /** 積立開始年齢(歳)。この年齢「以降」に積立を開始する。デフォルトは現在年齢。 */
-  startAge: number;
-  /** 積立終了年齢(歳)。デフォルトは退職年齢。 */
-  endAge: number;
+  /**
+   * 積立設定のリスト(枠ごと)。**空配列 = 積立なし**。
+   *
+   * 月額積立(monthly)と一括投資(lumpSum)を任意個数・任意の組み合わせで登録できる。
+   * 月額積立を年齢期間で分けることで「40〜45 歳は月 5 万、46〜50 歳は月 1 万」のように
+   * 年齢によって積立額を変えられる。一括投資は「40 歳で 1000 万」のような単発の投資を表す。
+   * 同一年に複数の設定が該当する場合は該当額をすべて合算して投資する(NISA 枠は投資上限でクランプ)。
+   */
+  contributions: ContributionSetting[];
   /**
    * 取り崩し設定のリスト(枠ごと。#69)。**空配列 = 取り崩しなし**。
    *

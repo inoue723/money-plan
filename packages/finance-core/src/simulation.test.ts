@@ -70,10 +70,8 @@ const baseInput = (overrides: Partial<SimulationInput> = {}): SimulationInput =>
         accountType: 'nisa',
         owner: 'self',
         initialHolding: 0,
-        monthlyAmount: 0,
         annualReturn: 3.0,
-        startAge: 30,
-        endAge: 65,
+        contributions: [{ type: 'monthly', startAge: 30, endAge: 64, monthlyAmount: 0 }],
         withdrawals: [],
       },
     ],
@@ -463,10 +461,8 @@ describe('runSimulation', () => {
               accountType: 'nisa',
               owner: 'self',
               initialHolding: 0,
-              monthlyAmount: 5,
               annualReturn: 5.0,
-              startAge: 30,
-              endAge: 65,
+              contributions: [{ type: 'monthly', startAge: 30, endAge: 64, monthlyAmount: 5 }],
               withdrawals: [],
             },
           ],
@@ -494,10 +490,8 @@ describe('runSimulation', () => {
               accountType: 'taxable',
               owner: 'self',
               initialHolding: 500,
-              monthlyAmount: 0,
               annualReturn: 5.0,
-              startAge: 30,
-              endAge: 65,
+              contributions: [{ type: 'monthly', startAge: 30, endAge: 64, monthlyAmount: 0 }],
               withdrawals: [],
             },
           ],
@@ -528,10 +522,8 @@ describe('runSimulation', () => {
               accountType: 'nisa',
               owner: 'self',
               initialHolding: 0,
-              monthlyAmount: 40,
               annualReturn: 0,
-              startAge: 30,
-              endAge: 90,
+              contributions: [{ type: 'monthly', startAge: 30, endAge: 89, monthlyAmount: 40 }],
               withdrawals: [],
             },
           ],
@@ -930,10 +922,8 @@ describe('runSimulation - 年金の額面計上と収支恒等式(#79)', () => {
               accountType: 'nisa',
               owner: 'self',
               initialHolding: 0,
-              monthlyAmount: 3,
               annualReturn: 3.0,
-              startAge: 60,
-              endAge: 64,
+              contributions: [{ type: 'monthly', startAge: 60, endAge: 63, monthlyAmount: 3 }],
               withdrawals: [],
             },
           ],
@@ -1116,10 +1106,9 @@ describe('runSimulation - 計算開始年月と初年の月割(#51)', () => {
               accountType: 'nisa',
               owner: 'self',
               initialHolding: 0,
-              monthlyAmount: 5, // 年 60
               annualReturn: 10,
-              startAge: 30,
-              endAge: 65,
+              // 年 60(月 5 万)。両端含む: 30〜64 歳。
+              contributions: [{ type: 'monthly', startAge: 30, endAge: 64, monthlyAmount: 5 }],
               withdrawals: [],
             },
           ],
@@ -1151,19 +1140,32 @@ describe('runSimulation - 計算開始年月と初年の月割(#51)', () => {
 });
 
 describe('runSimulation - iDeCo・小規模企業共済(#73)', () => {
-  /** 投資枠を1つ作る(必要な項目だけ上書き)。 */
-  const account = (overrides: Partial<InvestmentAccount> = {}): InvestmentAccount => ({
-    name: 'x',
-    accountType: 'ideco',
-    owner: 'self',
-    initialHolding: 0,
-    monthlyAmount: 0,
-    annualReturn: 0,
-    startAge: 30,
-    endAge: 65,
-    withdrawals: [],
-    ...overrides,
-  });
+  /**
+   * 投資枠を1つ作る(必要な項目だけ上書き)。旧来の記述を簡潔に保つため、`monthlyAmount` /
+   * `startAge` / `endAge` を渡すと「両端を含む月額積立 1 件」に変換する(旧仕様の終了年齢「未満」を
+   * 保つため endAge を 1 引く)。`contributions` を明示した場合はそれを優先する。
+   */
+  const account = (
+    overrides: Partial<InvestmentAccount> & {
+      monthlyAmount?: number;
+      startAge?: number;
+      endAge?: number;
+    } = {},
+  ): InvestmentAccount => {
+    const { monthlyAmount = 0, startAge = 30, endAge = 65, contributions, ...rest } = overrides;
+    return {
+      name: 'x',
+      accountType: 'ideco',
+      owner: 'self',
+      initialHolding: 0,
+      annualReturn: 0,
+      contributions: contributions ?? [
+        { type: 'monthly', startAge, endAge: endAge - 1, monthlyAmount },
+      ],
+      withdrawals: [],
+      ...rest,
+    };
+  };
 
   it('拠出すると本人の所得税・住民税が下がる(小規模企業共済等掛金控除)', () => {
     // 同じ拠出額(月2万=年24万)を NISA と iDeCo で比較する。iDeCo は拠出が全額所得控除になる。
@@ -1319,16 +1321,18 @@ describe('runSimulation - 投資取崩額の年次計上', () => {
       investment: { accounts },
     });
 
-  /** 取崩の検証用に、利回り・拠出なしの枠を作る(必要な項目だけ上書き)。 */
+  /**
+   * 取崩の検証用に、利回り・拠出なしの枠を作る(必要な項目だけ上書き)。
+   * 積立額 0 の月額積立を 60 歳に置き、実際の拠出は 0 にしつつ積立開始年齢 60 歳を持たせる
+   * (iDeCo・小規模企業共済の一時金の勤続年数 = 受取年齢 − 積立開始年齢 の算定に使う)。
+   */
   const account = (overrides: Partial<InvestmentAccount> = {}): InvestmentAccount => ({
     name: 'x',
     accountType: 'nisa',
     owner: 'self',
     initialHolding: 1000,
-    monthlyAmount: 0,
     annualReturn: 0,
-    startAge: 60,
-    endAge: 60,
+    contributions: [{ type: 'monthly', startAge: 60, endAge: 60, monthlyAmount: 0 }],
     withdrawals: [],
     ...overrides,
   });
