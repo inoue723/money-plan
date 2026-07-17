@@ -175,6 +175,17 @@ export interface PlanTab {
 }
 
 /**
+ * import 用のプラン 1 件(#71)。名前と入力一式のみを持つ最小構造。
+ * JSON import で復元するプランや、`addImportedPlans` の引数に使う。
+ */
+export interface ImportedPlan {
+  /** プラン名(タブ名)。既存タブと競合する場合は追加時に調整される。 */
+  name: string;
+  /** 入力一式(現行 `PERSIST_VERSION` の形状にマイグレーション済み)。 */
+  input: SimulationInput;
+}
+
+/**
  * 永続化スキーマのバージョン。`tabs` や入力形状(`SimulationInput`)の構造を
  * 破壊的に変更したら増やし、`persist` の `migrate` で旧データを変換する。
  */
@@ -322,6 +333,24 @@ const migrateWithdrawals = (input: SimulationInput): SimulationInput => ({
   },
 });
 
+/**
+ * プラン単位の入力マイグレーション(#71 JSON import 用)。
+ * export ファイルに書かれた `version` を起点に、現在の `PERSIST_VERSION` まで、
+ * 上記の入力マイグレーションを順に適用してプラン 1 件の `input` を現行形状へ揃える。
+ * persist の `migrate` はストア全体(tabs/activeTabId 含む)を変換するのに対し、
+ * こちらは import した個々のプランの `input` だけを対象にした薄いラッパ。
+ * - v2 → v3(#46 / #50)、v3 → v4(#49 / #52)、v5 → v6(#69)は入力形状を変換する。
+ * - v4 → v5(#51)は `basic.startYear` / `startMonth` を任意フィールドとして追加しただけで、
+ *   未設定でも従来挙動(月割なし)にフォールバックするため入力レベルの変換は不要。
+ */
+export const migratePlanInput = (input: SimulationInput, fromVersion: number): SimulationInput => {
+  let result = input;
+  if (fromVersion < 3) result = migrateInputV2toV3(result);
+  if (fromVersion < 4) result = migrateInputV3toV4(result);
+  if (fromVersion < 6) result = migrateWithdrawals(result);
+  return result;
+};
+
 /** タブの一意 ID を採番する。 */
 const createPlanId = (): string =>
   typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
@@ -446,7 +475,22 @@ export interface SimulationState {
   saveActiveTab: () => void;
   /** アクティブタブの編集内容を破棄し、最後に保存した入力へ戻す(変更を破棄)。 */
   discardActiveTabChanges: () => void;
+  /**
+   * import(#71)したプランを新規タブとして末尾に追加し、最後のタブをアクティブにする。
+   * 各タブは `savedInput` = `draftInput` = import した input で作られ、追加直後は未保存でない。
+   * プラン名が既存タブと競合する場合は import 日時のサフィックスを付け、それでも競合すれば連番を付す。
+   */
+  addImportedPlans: (plans: ImportedPlan[]) => void;
 }
+
+/**
+ * import 時のプラン名衝突回避に使う日時サフィックス(#71)。
+ * 例: `2026-07-14 10:30`。既存タブと同名のとき「`<元の名前> (<この文字列>)`」の形で付与する。
+ */
+const formatImportSuffix = (date: Date): string => {
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${date.getFullYear()}-${p(date.getMonth() + 1)}-${p(date.getDate())} ${p(date.getHours())}:${p(date.getMinutes())}`;
+};
 
 /**
  * アクティブタブのドラフトと `input` を同時に更新するヘルパ。
@@ -560,6 +604,29 @@ export const useSimulationStore = create<SimulationState>()(
           // 保存済みスナップショットの独立コピーでドラフト・入力を置換する。
           const restored = cloneInput(tab.savedInput);
           return { ...withDraft(s, restored), selectedYear: null };
+        }),
+      addImportedPlans: (plans) =>
+        set((s) => {
+          if (plans.length === 0) return {};
+          // この import 内で同一の日時サフィックスを使う(競合回避の一次手段)。
+          const suffix = formatImportSuffix(new Date());
+          const tabs = [...s.tabs];
+          let lastId = s.activeTabId;
+          for (const plan of plans) {
+            const baseName = plan.name.trim() || 'インポートしたプラン';
+            // まず元の名前を試し、既存タブと競合するなら import 日時サフィックスを付ける。
+            const taken = new Set(tabs.map((t) => t.name));
+            const withSuffix = taken.has(baseName) ? `${baseName} (${suffix})` : baseName;
+            // それでも競合する場合は uniquePlanName で連番を付す(名前は全タブでユニーク)。
+            const name = uniquePlanName(withSuffix, tabs, '');
+            // savedInput = draftInput = import した input(追加直後は未保存でない)。
+            const tab = makeTab(name, plan.input);
+            tabs.push(tab);
+            lastId = tab.id;
+          }
+          // 最後に import したタブをアクティブにする。
+          const active = tabs.find((t) => t.id === lastId)!;
+          return { tabs, activeTabId: lastId, input: active.draftInput, selectedYear: null };
         }),
     }),
     {

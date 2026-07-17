@@ -24,6 +24,7 @@ import { educationCostForAge } from './education';
 import {
   calcChildAllowanceManyen,
   calcPensionTax,
+  calcRetirementTax,
   calcSalaryTax,
   calcSelfEmployedTax,
   type PersonalDeductionOptions,
@@ -142,19 +143,29 @@ interface PersonPlan {
   lastWorkEndAge: number;
   /** 退職金の計上年齢(最後の会社員期間の終了翌年)。会社員期間が無ければ undefined。 */
   retirementBonusAge: number | undefined;
+  /**
+   * 退職所得控除の算定に用いる勤続年数(年)。会社員期間の合計年数
+   * (各期間 endAge − startAge + 1 の総和。両端を含むため +1)。会社員期間が無ければ 0。
+   * ※単一の会社員期間を勤続とみなす一般的なケースではその期間の年数に一致する(簡易化)。
+   */
+  retirementYearsOfService: number;
 }
 
-/** 収入情報から退職金・年金の基準年齢を求め、`PersonPlan` を構築する。 */
+/** 収入情報から退職金・年金の基準年齢・勤続年数を求め、`PersonPlan` を構築する。 */
 const buildPersonPlan = (income: IncomeInput): PersonPlan => {
   const { workPeriods } = income;
   const lastWorkEndAge = workPeriods.reduce((max, p) => Math.max(max, p.endAge), -Infinity);
-  const lastEmployeeEndAge = workPeriods
-    .filter((p) => p.workStyle === 'employee')
-    .reduce((max, p) => Math.max(max, p.endAge), -Infinity);
+  const employeePeriods = workPeriods.filter((p) => p.workStyle === 'employee');
+  const lastEmployeeEndAge = employeePeriods.reduce((max, p) => Math.max(max, p.endAge), -Infinity);
   const retirementBonusAge = Number.isFinite(lastEmployeeEndAge)
     ? lastEmployeeEndAge + 1
     : undefined;
-  return { income, lastWorkEndAge, retirementBonusAge };
+  // 勤続年数 = 会社員期間の合計年数(両端を含むため endAge − startAge + 1)。退職所得控除に用いる。
+  const retirementYearsOfService = employeePeriods.reduce(
+    (sum, p) => sum + (p.endAge - p.startAge + 1),
+    0,
+  );
+  return { income, lastWorkEndAge, retirementBonusAge, retirementYearsOfService };
 };
 
 /** 1 人分の当年収入・税の計算結果(金額はすべて万円)。 */
@@ -163,7 +174,9 @@ interface PersonYearIncome {
   grossSalary: number;
   /** 給与・事業の手取り。 */
   salaryNet: number;
-  /** 公的年金の手取り(受給前は 0)。 */
+  /** 公的年金の額面(受給前は 0。#79。年金分の税は `tax` 側に計上する)。 */
+  pensionGross: number;
+  /** 公的年金の手取り(受給前は 0)。手取り収入(net)・年間収支の算出に使う。 */
   pensionNet: number;
   /** 固定その他収入(手取り扱い・経常収支。初年は月割按分の対象。#51)。 */
   recurringOther: number;
@@ -187,7 +200,7 @@ const calcPersonYearIncome = (
   age: number,
   deduction: PersonalDeductionOptions,
 ): PersonYearIncome => {
-  const { income, lastWorkEndAge, retirementBonusAge } = plan;
+  const { income, lastWorkEndAge, retirementBonusAge, retirementYearsOfService } = plan;
 
   // 当年の働き方期間(該当なし = 無収入期間)。収入は期間の開始年齢を基準に複利成長する。
   const workPeriod = activeWorkPeriod(income.workPeriods, age);
@@ -212,6 +225,9 @@ const calcPersonYearIncome = (
   }
 
   // 公的年金は全就労期間の終了翌年から受給する(働き方期間が無い場合は起点から受給)。
+  // 額面(pensionGross)は給与と同じく収入内訳へ、年金分の所得税・住民税は税内訳へ計上する(#79)。
+  // 手取り(pensionNet)は手取り収入・年間収支の算出にのみ用いる(収入内訳には出さない)。
+  let pensionGross = 0;
   let pensionNet = 0;
   if (age > lastWorkEndAge && income.pension > 0) {
     const pensionTax = calcPensionTax({ pension: income.pension, age, ...deduction });
@@ -220,20 +236,35 @@ const calcPersonYearIncome = (
       incomeTax: pensionTax.incomeTax,
       residentTax: pensionTax.residentTax,
     });
+    pensionGross = income.pension;
     pensionNet = pensionTax.netPension;
   }
 
   // その他収入(手取り扱い): 固定のその他収入(経常)と退職金(一時)を分けて返す。
   // 退職金は最後の会社員期間の終了翌年に一括計上する(初年でも月割按分しない)。
+  // 退職金には退職所得控除・1/2課税・分離課税を適用し、手取り額を計上する(#19)。
   const recurringOther = income.other;
   let oneTimeOther = 0;
   let retiredThisYear = false;
   if (age === retirementBonusAge && income.retirementBonus > 0) {
-    oneTimeOther += income.retirementBonus;
+    const { netRetirementBonus } = calcRetirementTax({
+      retirementBonus: income.retirementBonus,
+      yearsOfService: retirementYearsOfService,
+    });
+    oneTimeOther += netRetirementBonus;
     retiredThisYear = true;
   }
 
-  return { grossSalary, salaryNet, pensionNet, recurringOther, oneTimeOther, tax, retiredThisYear };
+  return {
+    grossSalary,
+    salaryNet,
+    pensionGross,
+    pensionNet,
+    recurringOther,
+    oneTimeOther,
+    tax,
+    retiredThisYear,
+  };
 };
 
 // ---------------------------------------------------------------------------
@@ -330,6 +361,9 @@ export function runSimulation(input: SimulationInput): SimulationResult {
     const fullTax = spouseYear ? addTaxBreakdown(selfYear.tax, spouseYear.tax) : selfYear.tax;
     const taxBreakdown = monthFactor === 1 ? fullTax : scaleTaxBreakdown(fullTax, monthFactor);
     const salaryNet = (selfYear.salaryNet + (spouseYear ? spouseYear.salaryNet : 0)) * monthFactor;
+    // 年金の額面(収入内訳用)と手取り(手取り収入・年間収支用)を分けて集計する(#79)。
+    const pensionGross =
+      (selfYear.pensionGross + (spouseYear ? spouseYear.pensionGross : 0)) * monthFactor;
     const pensionNet =
       (selfYear.pensionNet + (spouseYear ? spouseYear.pensionNet : 0)) * monthFactor;
 
@@ -474,7 +508,7 @@ export function runSimulation(input: SimulationInput): SimulationResult {
       grossSalary,
       spouseSalary: spouseSalary * monthFactor,
       net: salaryNet,
-      pension: pensionNet,
+      pension: pensionGross,
       childAllowance,
       other: otherIncome,
       investmentGain: invStep.gain,

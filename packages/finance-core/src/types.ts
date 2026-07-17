@@ -385,7 +385,12 @@ export interface IncomeBreakdown {
   spouseSalary: number;
   /** 手取り収入(額面 − 所得税 − 住民税 − 社会保険料)。 */
   net: number;
-  /** 公的年金の受給額。 */
+  /**
+   * 公的年金の受給額(額面。#79)。
+   * 給与(grossSalary)と同じく額面で持ち、年金分の所得税・住民税は `tax.incomeTax` /
+   * `tax.residentTax` 側に計上する(手取りは持たない)。これにより CF表の「収入合計」が
+   * 純粋な額面合計になり、税を支出側に計上しても年金分の税が二重計上されない。
+   */
   pension: number;
   /** 児童手当。 */
   childAllowance: number;
