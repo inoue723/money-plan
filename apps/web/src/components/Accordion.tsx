@@ -12,10 +12,12 @@ export interface AccordionProps {
   defaultOpen?: boolean;
   /** タイトル右に表示する補助情報(件数など)。 */
   badge?: ReactNode;
+  /** このセクションに未保存の変更があるか(#74)。true のときタイトル右にマーカーを表示する。 */
+  dirty?: boolean;
   children: ReactNode;
 }
 
-export function Accordion({ title, defaultOpen = false, badge, children }: AccordionProps) {
+export function Accordion({ title, defaultOpen = false, badge, dirty, children }: AccordionProps) {
   const [open, setOpen] = useState(defaultOpen);
 
   return (
@@ -28,6 +30,13 @@ export function Accordion({ title, defaultOpen = false, badge, children }: Accor
       >
         <span className="flex items-center gap-2">
           <span className="text-sm font-semibold text-slate-800">{title}</span>
+          {dirty && (
+            <span
+              className="h-2 w-2 shrink-0 rounded-full bg-sky-500"
+              aria-hidden="true"
+              title="未保存の変更があります"
+            />
+          )}
           {badge}
         </span>
         <svg

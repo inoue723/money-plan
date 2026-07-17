@@ -7,7 +7,7 @@
  * 配偶者の年齢は F-01(基本情報)で入力し、収入は本セクションで本人と同じ UI で入力する。
  */
 import type { IncomeInput, WorkPeriod, WorkStyle } from '@money-plan/finance-core';
-import { useSimulationStore } from '../../stores/simulationStore';
+import { isArrayItemDirty, useSavedInput, useSimulationStore } from '../../stores/simulationStore';
 import { NumberField } from '../../components/NumberField';
 import { AgeNumberField } from '../../components/AgeNumberField';
 import { SelectField } from '../../components/SelectField';
@@ -54,6 +54,8 @@ interface IncomeFieldsProps {
   income: IncomeInput;
   /** 働き方期間を新規追加するときの既定開始年齢(本人=現在年齢 / 配偶者=配偶者年齢)。 */
   baseAge: number;
+  /** 保存済みの働き方期間(アイテム単位の未保存ハイライト用。#74)。 */
+  savedPeriods?: readonly WorkPeriod[];
   /** 収入情報の部分更新。 */
   onChange: (patch: Partial<IncomeInput>) => void;
 }
@@ -62,7 +64,7 @@ interface IncomeFieldsProps {
  * 収入情報の入力フォーム(本人・配偶者で共通。#49)。
  * 働き方期間リスト + 退職金 / 年金 / その他収入 をまとめて編集する。
  */
-function IncomeFields({ income, baseAge, onChange }: IncomeFieldsProps) {
+function IncomeFields({ income, baseAge, savedPeriods, onChange }: IncomeFieldsProps) {
   const periods = income.workPeriods;
 
   const updatePeriod = (index: number, patch: Partial<WorkPeriod>) => {
@@ -93,7 +95,12 @@ function IncomeFields({ income, baseAge, onChange }: IncomeFieldsProps) {
       )}
 
       {periods.map((period, i) => (
-        <div key={i} className="rounded-md border border-slate-200 p-2">
+        <div
+          key={i}
+          className={`rounded-md border p-2 ${
+            isArrayItemDirty(period, savedPeriods, i) ? 'border-sky-400' : 'border-slate-200'
+          }`}
+        >
           <div className="mb-2 flex items-end gap-2">
             <div className="flex-1">
               <SelectField
@@ -207,12 +214,19 @@ export function IncomeSection() {
   const spouse = useSimulationStore((s) => s.input.family.spouse);
   const setIncome = useSimulationStore((s) => s.setIncome);
   const setFamily = useSimulationStore((s) => s.setFamily);
+  // 保存済み入力(アイテム単位の未保存ハイライト用。#74)。
+  const saved = useSavedInput();
 
   return (
     <div className="flex flex-col gap-5">
       <div className="flex flex-col gap-2">
         <p className="text-xs font-semibold text-slate-700">本人の収入</p>
-        <IncomeFields income={income} baseAge={currentAge} onChange={(patch) => setIncome(patch)} />
+        <IncomeFields
+          income={income}
+          baseAge={currentAge}
+          savedPeriods={saved?.income.workPeriods}
+          onChange={(patch) => setIncome(patch)}
+        />
       </div>
 
       {spouse ? (
@@ -226,6 +240,7 @@ export function IncomeSection() {
           <IncomeFields
             income={spouse.income}
             baseAge={spouse.age}
+            savedPeriods={saved?.family.spouse?.income.workPeriods}
             onChange={(patch) =>
               setFamily({ spouse: { ...spouse, income: { ...spouse.income, ...patch } } })
             }

@@ -10,7 +10,12 @@
  */
 import { useState } from 'react';
 import type { Child } from '@money-plan/finance-core';
-import { createDefaultSpouse, useSimulationStore } from '../../stores/simulationStore';
+import {
+  createDefaultSpouse,
+  isArrayItemDirty,
+  useSavedInput,
+  useSimulationStore,
+} from '../../stores/simulationStore';
 import { NumberField } from '../../components/NumberField';
 import { SelectField } from '../../components/SelectField';
 import { ToggleField } from '../../components/ToggleField';
@@ -73,6 +78,8 @@ export function BasicSection() {
   const family = useSimulationStore((s) => s.input.family);
   const setBasic = useSimulationStore((s) => s.setBasic);
   const setFamily = useSimulationStore((s) => s.setFamily);
+  // 未保存の子ども(アイテム)ハイライト用に、保存済みの子どもリストを取得する(#74)。
+  const savedChildren = useSavedInput()?.family.children;
 
   // 居住地域は現行の計算に未使用のためローカル state のみで保持する(SPEC.md 2.2 F-01 の項目網羅用)。
   const [prefecture, setPrefecture] = useState('東京都');
@@ -199,8 +206,12 @@ export function BasicSection() {
         {family.children.map((child, i) => {
           // bornAtParentAge が現在年齢より大きい = まだ生まれていない(将来生まれる)子ども。
           const isFuture = child.bornAtParentAge > basic.currentAge;
+          const dirty = isArrayItemDirty(child, savedChildren, i);
           return (
-            <div key={i} className="rounded-md border border-slate-200 p-2">
+            <div
+              key={i}
+              className={`rounded-md border p-2 ${dirty ? 'border-sky-400' : 'border-slate-200'}`}
+            >
               <div className="mb-2 flex items-center justify-between gap-2">
                 <span className="text-xs font-medium text-slate-600">子ども {i + 1}</span>
                 <button

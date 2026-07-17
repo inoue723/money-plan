@@ -7,7 +7,7 @@
  * 教育費・ライフイベント費用・住宅ローン返済は別セクション(家族/イベント)で扱う。
  */
 import type { ExpenseItem, ExpensePeriod, RentInput, RentPeriod } from '@money-plan/finance-core';
-import { useSimulationStore } from '../../stores/simulationStore';
+import { isArrayItemDirty, useSavedInput, useSimulationStore } from '../../stores/simulationStore';
 import { NumberField } from '../../components/NumberField';
 import { AgeNumberField } from '../../components/AgeNumberField';
 
@@ -70,6 +70,8 @@ export function ExpenseSection() {
   const currentAge = useSimulationStore((s) => s.input.basic.currentAge);
   const endAge = useSimulationStore((s) => s.input.basic.endAge);
   const setExpense = useSimulationStore((s) => s.setExpense);
+  // 保存済みの支出項目(アイテム単位の未保存ハイライト用。#74)。
+  const savedItems = useSavedInput()?.expense.items;
 
   // --- 家賃(#50) --------------------------------------------------------
   const setRent = (next: RentInput | undefined) => setExpense({ rent: next });
@@ -302,8 +304,12 @@ export function ExpenseSection() {
 
       {items.map((item, itemIndex) => {
         const warnings = validatePeriods(item.periods);
+        const dirty = isArrayItemDirty(item, savedItems, itemIndex);
         return (
-          <div key={itemIndex} className="rounded-md border border-slate-200 p-2">
+          <div
+            key={itemIndex}
+            className={`rounded-md border p-2 ${dirty ? 'border-sky-400' : 'border-slate-200'}`}
+          >
             <div className="mb-2 flex items-end gap-2">
               <label className="flex flex-1 flex-col gap-1">
                 <span className="text-xs font-medium text-slate-600">項目名</span>

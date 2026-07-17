@@ -23,7 +23,7 @@ import {
   NISA_LIFETIME_LIMIT,
   nisaInitialLifetimeUsage,
 } from '@money-plan/finance-core';
-import { useSimulationStore } from '../../stores/simulationStore';
+import { isArrayItemDirty, useSavedInput, useSimulationStore } from '../../stores/simulationStore';
 import { NumberField } from '../../components/NumberField';
 import { AgeNumberField } from '../../components/AgeNumberField';
 import { SelectField } from '../../components/SelectField';
@@ -133,6 +133,8 @@ export function InvestmentSection() {
   const children = useSimulationStore((s) => s.input.family.children);
   const hasSpouse = useSimulationStore((s) => s.input.family.spouse !== undefined);
   const setInvestment = useSimulationStore((s) => s.setInvestment);
+  // 保存済みの投資枠(アイテム単位の未保存ハイライト用。#74)。
+  const savedAccounts = useSavedInput()?.investment.accounts;
 
   // 各投資枠の「運用成長後・取崩処理適用前」の年次評価額(#72)。現在の入力全体
   // (他の取り崩し設定・NISA 上限を含む)を反映してシミュレーション本体と同じ計算で求める。
@@ -206,6 +208,7 @@ export function InvestmentSection() {
           currentAge={currentAge}
           planEndAge={planEndAge}
           hasSpouse={hasSpouse}
+          dirty={isArrayItemDirty(account, savedAccounts, i)}
           familyChildren={children}
           valueAtAge={(age) => valueAtAge(i, age)}
           onChange={(next) => updateAccount(i, next)}
@@ -230,6 +233,7 @@ function AccountFields({
   currentAge,
   planEndAge,
   hasSpouse,
+  dirty,
   familyChildren,
   valueAtAge,
   onChange,
@@ -240,6 +244,8 @@ function AccountFields({
   /** シミュレーション終了年齢(basic.endAge)。分割取崩の既定の終了年齢に使う(#69)。 */
   planEndAge: number;
   hasSpouse: boolean;
+  /** この投資枠に未保存の変更があるか(アイテム単位のハイライト用。#74)。 */
+  dirty: boolean;
   /** 子ども一覧(一括取崩の対象年齢 tooltip に子ども年齢を併記する。#47 / #72)。 */
   familyChildren: Child[];
   /**
@@ -277,7 +283,7 @@ function AccountFields({
     hasSpouse || account.owner === 'spouse' ? OWNER_OPTIONS : [OWNER_OPTIONS[0]!];
 
   return (
-    <div className="rounded-md border border-slate-200 p-2">
+    <div className={`rounded-md border p-2 ${dirty ? 'border-sky-400' : 'border-slate-200'}`}>
       <div className="mb-2 flex items-end gap-2">
         <label className="flex flex-1 flex-col gap-1">
           <span className="text-xs font-medium text-slate-600">枠の名前</span>
