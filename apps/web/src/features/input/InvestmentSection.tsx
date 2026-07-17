@@ -32,7 +32,20 @@ import { formatChildAgeLines } from '../../components/childAges';
 const ACCOUNT_TYPE_OPTIONS: { value: AccountType; label: string }[] = [
   { value: 'nisa', label: 'NISA(非課税)' },
   { value: 'taxable', label: '課税口座(特定口座等)' },
+  { value: 'ideco', label: 'iDeCo(拠出全額所得控除)' },
+  { value: 'mutualAid', label: '小規模企業共済(拠出全額所得控除)' },
 ];
+
+/**
+ * 口座種別ごとの補足ヒント(#73)。iDeCo・小規模企業共済は拠出が全額所得控除になる旨と拠出上限の目安を示す。
+ * 拠出上限はモデル化せず(簡易化)、目安の注意書きに留める。
+ */
+const ACCOUNT_TYPE_HINT: Record<AccountType, string | undefined> = {
+  nisa: '生涯1800万・年間360万まで',
+  taxable: undefined,
+  ideco: '拠出額は全額所得控除。上限は職業により月1.2〜6.8万円が目安',
+  mutualAid: '拠出額は全額所得控除。上限は月7万円が目安(個人事業主・小規模法人役員向け)',
+};
 
 const OWNER_OPTIONS: { value: AccountOwner; label: string }[] = [
   { value: 'self', label: '本人' },
@@ -303,7 +316,7 @@ function AccountFields({
           value={account.accountType}
           options={ACCOUNT_TYPE_OPTIONS}
           onChange={(v) => onChange({ ...account, accountType: v as AccountType })}
-          hint={account.accountType === 'nisa' ? '生涯1800万・年間360万まで' : undefined}
+          hint={ACCOUNT_TYPE_HINT[account.accountType]}
         />
         <SelectField
           label="名義"

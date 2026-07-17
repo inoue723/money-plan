@@ -173,6 +173,11 @@ export interface PersonalDeductionOptions {
   hasSpouseDeduction?: boolean;
   /** 扶養控除の対象となる扶養親族の区分リスト(16 歳未満は児童手当の対象のため含めない)。 */
   dependents?: DependentCategory[];
+  /**
+   * 小規模企業共済等掛金控除(万円、#73)。iDeCo・小規模企業共済の当年拠出額。
+   * 全額が所得控除となり、所得税・住民税の両方の課税所得から差し引く。未指定は 0(控除なし)。
+   */
+  smallBusinessMutualAidDeduction?: number;
 }
 
 /** 所得税・住民税それぞれの人的控除合計(円)。 */
@@ -185,7 +190,11 @@ interface PersonalDeductions {
  * 基礎控除 + 配偶者控除 + 扶養控除の合計(円)を所得税・住民税それぞれで求める。
  */
 function calcPersonalDeductions(options: PersonalDeductionOptions = {}): PersonalDeductions {
-  const { hasSpouseDeduction = false, dependents = [] } = options;
+  const {
+    hasSpouseDeduction = false,
+    dependents = [],
+    smallBusinessMutualAidDeduction = 0,
+  } = options;
 
   let incomeTax = BASIC_DEDUCTION.incomeTax;
   let residentTax = BASIC_DEDUCTION.residentTax;
@@ -199,6 +208,11 @@ function calcPersonalDeductions(options: PersonalDeductionOptions = {}): Persona
     incomeTax += DEPENDENT_DEDUCTION[category].incomeTax;
     residentTax += DEPENDENT_DEDUCTION[category].residentTax;
   }
+
+  // 小規模企業共済等掛金控除(#73): iDeCo・小規模企業共済の拠出額を全額、所得税・住民税とも控除する。
+  const mutualAidYen = toYen(Math.max(0, smallBusinessMutualAidDeduction));
+  incomeTax += mutualAidYen;
+  residentTax += mutualAidYen;
 
   return { incomeTax, residentTax };
 }

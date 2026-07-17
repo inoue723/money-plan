@@ -294,6 +294,108 @@ describe('stepInvestment - 取り崩し(NISA)', () => {
   });
 });
 
+describe('stepInvestment - iDeCo・小規模企業共済(#73)', () => {
+  it('拠出額を名義ごとに集計する(小規模企業共済等掛金控除の対象)', () => {
+    const prev: InvestmentState = {
+      accounts: [
+        { value: 0, costBasis: 0 },
+        { value: 0, costBasis: 0 },
+        { value: 0, costBasis: 0 },
+      ],
+      nisaLifetimeCostBasis: { self: 0, spouse: 0 },
+    };
+    const investment: InvestmentInput = {
+      accounts: [
+        makeAccount({ accountType: 'ideco', owner: 'self', monthlyAmount: 2, annualReturn: 0 }),
+        makeAccount({ accountType: 'mutualAid', owner: 'self', monthlyAmount: 5, annualReturn: 0 }),
+        makeAccount({ accountType: 'ideco', owner: 'spouse', monthlyAmount: 1, annualReturn: 0 }),
+      ],
+    };
+
+    const result = stepInvestment(prev, { age: 40, investment });
+
+    // 本人: (2 + 5) × 12 = 84、配偶者: 1 × 12 = 12。
+    expect(result.mutualAidContributionByOwner).toEqual({ self: 84, spouse: 12 });
+  });
+
+  it('iDeCo・小規模企業共済は NISA 生涯・年間枠を消費しない', () => {
+    const prev: InvestmentState = {
+      accounts: [{ value: 0, costBasis: 0 }],
+      nisaLifetimeCostBasis: { self: 0, spouse: 0 },
+    };
+    // 年間 360 万を超える拠出でも上限で止まらず、NISA 累計簿価も増えない。
+    const investment = oneAccount({
+      accountType: 'ideco',
+      monthlyAmount: 40, // 年 480 万(NISA 年間枠 360 万超)
+      annualReturn: 0,
+    });
+
+    const result = stepInvestment(prev, { age: 40, investment });
+
+    expect(result.contribution).toBe(480); // 上限で止まらない
+    expect(result.uninvested).toBe(0);
+    expect(result.state.nisaLifetimeCostBasis).toEqual({ self: 0, spouse: 0 });
+  });
+
+  it('運用益は非課税(取り崩しでも運用益課税は発生しない)', () => {
+    const prev: InvestmentState = {
+      accounts: [{ value: 1000, costBasis: 600 }],
+      nisaLifetimeCostBasis: { self: 0, spouse: 0 },
+    };
+    const investment = oneAccount({
+      accountType: 'ideco',
+      annualReturn: 0,
+      withdrawals: [{ type: 'lumpSum', age: 70, amount: 100 }],
+    });
+
+    const result = stepInvestment(prev, { age: 70, investment });
+
+    expect(result.withdrawal).toBe(100);
+    expect(result.tax).toBe(0); // 運用益課税なし
+  });
+
+  it('一括取崩を「勤続年数 = 受取年齢 − 積立開始年齢」つきで名義別に報告する', () => {
+    const prev: InvestmentState = {
+      accounts: [{ value: 1000, costBasis: 0 }],
+      nisaLifetimeCostBasis: { self: 0, spouse: 0 },
+    };
+    const investment = oneAccount({
+      accountType: 'ideco',
+      owner: 'self',
+      startAge: 30,
+      annualReturn: 0,
+      withdrawals: [{ type: 'lumpSum', age: 65, amount: 300 }],
+    });
+
+    const result = stepInvestment(prev, { age: 65, investment });
+
+    expect(result.mutualAidLumpSums).toEqual([
+      { owner: 'self', amount: 300, yearsOfService: 35 }, // 65 − 30
+    ]);
+    // spread は無いため 0。
+    expect(result.mutualAidSpreadByOwner).toEqual({ self: 0, spouse: 0 });
+  });
+
+  it('分割取崩を名義ごとに集計する(年金合算課税の対象)', () => {
+    const prev: InvestmentState = {
+      accounts: [{ value: 1000, costBasis: 0 }],
+      nisaLifetimeCostBasis: { self: 0, spouse: 0 },
+    };
+    const investment = oneAccount({
+      accountType: 'mutualAid',
+      owner: 'spouse',
+      annualReturn: 0,
+      withdrawals: [{ type: 'spread', startAge: 65, endAge: 84 }], // 残り20年 → 1000/20 = 50
+    });
+
+    const result = stepInvestment(prev, { age: 65, investment });
+
+    expect(result.mutualAidSpreadByOwner).toEqual({ self: 0, spouse: 50 });
+    expect(result.mutualAidLumpSums).toEqual([]);
+    expect(result.tax).toBe(0);
+  });
+});
+
 describe('stepInvestment - 分割取崩(spread。#69)', () => {
   /** 取崩フェーズだけを見たい枠(積立なし・利回りは指定)。 */
   const spreadAccount = (

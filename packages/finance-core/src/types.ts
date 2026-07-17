@@ -296,8 +296,16 @@ export interface LumpSumWithdrawal {
  */
 export type WithdrawalSetting = SpreadWithdrawal | LumpSumWithdrawal;
 
-/** 投資口座の種別。'nisa' は非課税(NISA 上限あり)、'taxable' は課税口座(特定口座等)。 */
-export type AccountType = 'nisa' | 'taxable';
+/**
+ * 投資口座の種別。
+ * - 'nisa': 非課税(NISA 上限あり)。運用益は非課税で、生涯 1800 万・年間 360 万の投資枠を消費する。
+ * - 'taxable': 課税口座(特定口座等)。取崩時に運用益へ課税する。
+ * - 'ideco': iDeCo(#73)。拠出額は全額所得控除(小規模企業共済等掛金控除)。運用益は非課税で、
+ *   NISA の生涯・年間投資枠は消費しない。受取は取り崩し設定(#69)で行い、一括取崩=一時金(退職所得課税)、
+ *   分割取崩=年金(公的年金等控除つき課税)として簡易課税する。
+ * - 'mutualAid': 小規模企業共済(#73)。税制上の扱いは iDeCo と同一(拠出全額所得控除・運用益非課税・受取簡易課税)。
+ */
+export type AccountType = 'nisa' | 'taxable' | 'ideco' | 'mutualAid';
 
 /**
  * 投資枠の名義(#52)。'self' は本人、'spouse' は配偶者。
@@ -313,7 +321,10 @@ export type AccountOwner = 'self' | 'spouse';
 export interface InvestmentAccount {
   /** 枠の名前(例: NISA、特定口座)。表示・識別用。 */
   name: string;
-  /** 口座種別。'nisa' は非課税(上限あり)、'taxable' は取崩時に運用益へ課税。 */
+  /**
+   * 口座種別。'nisa' は非課税(上限あり)、'taxable' は取崩時に運用益へ課税、
+   * 'ideco'・'mutualAid' は拠出全額所得控除・運用益非課税・受取簡易課税(#73)。
+   */
   accountType: AccountType;
   /**
    * 名義(#52)。デフォルト 'self'(本人)。NISA 枠の生涯・年間投資枠は名義ごとに独立適用する。

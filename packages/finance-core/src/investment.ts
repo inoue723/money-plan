@@ -66,6 +66,7 @@
 import { CAPITAL_GAINS_TAX_RATE, NISA_ANNUAL_LIMIT, NISA_LIFETIME_LIMIT } from './constants';
 import type {
   AccountOwner,
+  AccountType,
   InvestmentAccount,
   InvestmentInput,
   LumpSumWithdrawal,
@@ -75,6 +76,13 @@ import type {
 
 /** 名義の全リスト(名義ごとの集計・反復に使う内部定数)。 */
 const ACCOUNT_OWNERS: readonly AccountOwner[] = ['self', 'spouse'];
+
+/**
+ * iDeCo・小規模企業共済の口座か(#73)。
+ * これらは拠出が小規模企業共済等掛金控除の対象・運用益非課税・受取簡易課税として同一に扱う。
+ */
+const isMutualAidAccount = (accountType: AccountType): boolean =>
+  accountType === 'ideco' || accountType === 'mutualAid';
 
 /** 名義ごとの数値マップ(NISA 生涯枠の名義別追跡に使う)。 */
 export type OwnerAmounts = Record<AccountOwner, number>;
@@ -135,6 +143,19 @@ export interface InvestmentStepParams {
   monthFactor?: number;
 }
 
+/**
+ * iDeCo・小規模企業共済の当年の一括取崩(一時金受取)1 件(#73)。
+ * 一時金は退職所得として分離課税するため、金額と勤続年数(=拠出年数)を呼び出し側に渡す。
+ */
+export interface MutualAidLumpSum {
+  /** 名義(本人 / 配偶者)。 */
+  owner: AccountOwner;
+  /** 一括取崩額(万円)。 */
+  amount: number;
+  /** 退職所得控除の算定に用いる勤続年数(年)= 受取年齢 − 積立開始年齢(#73)。 */
+  yearsOfService: number;
+}
+
 /** 1ステップ計算の結果(全枠合計)。 */
 export interface InvestmentStepResult {
   /** 更新後の投資state(翌年の入力になる)。 */
@@ -150,8 +171,23 @@ export interface InvestmentStepResult {
   uninvested: number;
   /** 当年の取崩額(全枠合計・万円、投資資産の評価額から差し引いた額)。 */
   withdrawal: number;
-  /** 取り崩しに伴う運用益課税(全枠合計・万円)。NISA 枠は常に 0。 */
+  /** 取り崩しに伴う運用益課税(全枠合計・万円)。NISA・iDeCo・小規模企業共済の枠は常に 0。 */
   tax: number;
+  /**
+   * iDeCo・小規模企業共済の当年の拠出額を名義ごとに合算した額(万円、#73)。
+   * 呼び出し側で小規模企業共済等掛金控除として、その名義の所得税・住民税から全額控除する。
+   */
+  mutualAidContributionByOwner: OwnerAmounts;
+  /**
+   * iDeCo・小規模企業共済の当年の分割取崩(年金受取)額を名義ごとに合算した額(万円、#73)。
+   * 呼び出し側でその年の公的年金収入に合算し、公的年金等控除つきで課税する。
+   */
+  mutualAidSpreadByOwner: OwnerAmounts;
+  /**
+   * iDeCo・小規模企業共済の当年の一括取崩(一時金受取)の一覧(#73)。
+   * 呼び出し側で各件を退職所得として分離課税する。
+   */
+  mutualAidLumpSums: MutualAidLumpSum[];
   /** 当年末の投資資産評価額(全枠合計・万円)。 */
   investmentValue: number;
   /**
@@ -180,6 +216,10 @@ interface AccountStepResult {
   uninvested: number;
   withdrawal: number;
   tax: number;
+  /** 当年の分割取崩(spread)の取崩額合計(万円、#73)。iDeCo・小規模企業共済の年金合算課税に使う。 */
+  spreadWithdrawal: number;
+  /** 当年の一括取崩(lumpSum)の取崩額の一覧(万円、#73)。iDeCo・小規模企業共済の一時金課税に使う。 */
+  lumpSumWithdrawals: number[];
   /**
    * 当年の運用成長後・取崩処理適用前の評価額(万円、#72)。
    * = (前年評価額 + 当年積立額) × (1 + 利回り)。当年の取り崩し(spread / lumpSum)を差し引く前の値。
@@ -285,6 +325,8 @@ const stepAccount = (prev: AccountState, params: AccountStepParams): AccountStep
   // 当年に該当する設定を spread → lumpSum の順に**順次**適用する(#69)。各設定は直前の取崩を
   // 反映した残高に対して評価するため、残高が尽きたら以降の取崩額は 0 になる。
   let withdrawalAmount = 0;
+  let spreadWithdrawal = 0;
+  const lumpSumWithdrawals: number[] = [];
   let tax = 0;
   let newValue = grownValue;
   let newCostBasis = costBasisAfterContribution;
@@ -297,13 +339,21 @@ const stepAccount = (prev: AccountState, params: AccountStepParams): AccountStep
     const amount = Math.min(Math.max(0, desiredWithdrawal(setting, age, newValue)), newValue);
     if (amount <= 0) continue;
 
-    // 課税口座のみ、取崩額に含まれる評価益へ課税する(NISA は非課税)。
+    // 課税口座のみ、取崩額に含まれる評価益へ課税する(NISA・iDeCo・小規模企業共済は運用益非課税)。
     // 簿価按分は残存比率で行うため評価益割合は取崩の前後で不変で、同一年に複数回取り崩しても
-    // 二重課税・課税漏れは起きない。
+    // 二重課税・課税漏れは起きない。iDeCo・小規模企業共済の受取課税は取崩の種別(spread / lumpSum)に
+    // 応じて呼び出し側(simulation.ts)で行う(spread=年金合算・lumpSum=退職所得)。
     if (accountType === 'taxable') {
       const unrealizedGain = newValue - newCostBasis;
       const gainRatio = unrealizedGain > 0 ? unrealizedGain / newValue : 0;
       tax += amount * gainRatio * CAPITAL_GAINS_TAX_RATE;
+    }
+
+    // 種別ごとに取崩額を集計する(#73。iDeCo・小規模企業共済の受取課税の按分に使う)。
+    if (setting.type === 'spread') {
+      spreadWithdrawal += amount;
+    } else {
+      lumpSumWithdrawals.push(amount);
     }
 
     // 取崩後の評価額と簿価(簿価は取崩額のうち元本相当分だけ減らす)。
@@ -320,6 +370,8 @@ const stepAccount = (prev: AccountState, params: AccountStepParams): AccountStep
     uninvested,
     withdrawal: withdrawalAmount,
     tax,
+    spreadWithdrawal,
+    lumpSumWithdrawals,
     valueBeforeWithdrawal: grownValue,
   };
 };
@@ -358,6 +410,10 @@ export const stepInvestment = (
   let totalTax = 0;
   let totalValue = 0;
   const nisaContributedThisYear: OwnerAmounts = emptyOwnerAmounts();
+  // iDeCo・小規模企業共済の受取・拠出の集計(#73)。呼び出し側で控除・課税に用いる。
+  const mutualAidContributionByOwner: OwnerAmounts = emptyOwnerAmounts();
+  const mutualAidSpreadByOwner: OwnerAmounts = emptyOwnerAmounts();
+  const mutualAidLumpSums: MutualAidLumpSum[] = [];
 
   accounts.forEach((account, idx) => {
     const prevAccount = prev.accounts[idx] ?? emptyAccountState();
@@ -365,6 +421,7 @@ export const stepInvestment = (
     const owner = ownerOf(account);
 
     // NISA 枠は当該名義の年間・生涯の残余のうち小さい方まで、課税枠は無制限。
+    // iDeCo・小規模企業共済は NISA 上限の対象外のため無制限(生涯・年間枠を消費しない。#73)。
     const contributionCap = isNisa
       ? Math.max(0, Math.min(annualNisaRemaining[owner], lifetimeNisaRemaining[owner]))
       : Number.POSITIVE_INFINITY;
@@ -375,6 +432,16 @@ export const stepInvestment = (
       annualNisaRemaining[owner] -= step.contribution;
       lifetimeNisaRemaining[owner] -= step.contribution;
       nisaContributedThisYear[owner] += step.contribution;
+    }
+
+    // iDeCo・小規模企業共済(#73): 拠出額(全額所得控除)と受取額(spread=年金 / lumpSum=一時金)を名義ごとに集計。
+    if (isMutualAidAccount(account.accountType)) {
+      mutualAidContributionByOwner[owner] += step.contribution;
+      mutualAidSpreadByOwner[owner] += step.spreadWithdrawal;
+      for (const amount of step.lumpSumWithdrawals) {
+        // 勤続年数 = 受取年齢 − 積立開始年齢(#73。0 以上に丸め、控除計算側で最低 1 年に補正)。
+        mutualAidLumpSums.push({ owner, amount, yearsOfService: Math.max(0, age - account.startAge) });
+      }
     }
 
     newAccountStates.push(step.state);
@@ -403,6 +470,9 @@ export const stepInvestment = (
     uninvested: totalUninvested,
     withdrawal: totalWithdrawal,
     tax: totalTax,
+    mutualAidContributionByOwner,
+    mutualAidSpreadByOwner,
+    mutualAidLumpSums,
     investmentValue: totalValue,
     accountValuesBeforeWithdrawal,
   };
