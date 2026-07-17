@@ -184,8 +184,23 @@ export interface IncomeInput {
   workPeriods: WorkPeriod[];
   /** 退職金(万円)。最後の会社員期間の終了翌年に一括計上。 */
   retirementBonus: number;
-  /** 年金受給額(年額・万円)。全就労期間の終了翌年から受給。 */
+  /**
+   * 年金受給額(年額・万円)。`pensionAutoEstimate` が false(手動)のときに使う受給額。
+   * `pensionAutoEstimate` が true のときはこの値は無視し、就労履歴からの推定額(`estimatePension`)を用いる。
+   */
   pension: number;
+  /**
+   * 公的年金の受給開始年齢(歳、#18)。この年齢の年から年金を計上する(両端を含む)。
+   * 未設定なら `DEFAULT_PENSION_START_AGE`(65 歳)。退職年齢とは独立に持ち、退職〜受給開始の
+   * 空白期間(無収入期間)を表現できる。繰上げ/繰下げによる受給額の増減率は考慮しない(#18 スコープ外)。
+   */
+  pensionStartAge?: number;
+  /**
+   * 年金受給額を就労履歴から自動推定するか(#21)。true なら `pension` を無視し、
+   * `estimatePension`(老齢基礎年金 + 老齢厚生年金の簡易推定)による概算額を受給額とする。
+   * 未設定(undefined)は false(手動入力)として扱う(既存プランの手動値を保持するため)。
+   */
+  pensionAutoEstimate?: boolean;
   /** その他の収入(年額・万円、手取り扱い)。 */
   other: number;
 }

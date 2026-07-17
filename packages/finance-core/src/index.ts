@@ -24,6 +24,9 @@ export {
   type RetirementTaxResult,
 } from './tax';
 
+// 公的年金受給額の就労履歴からの推定(#21)。UI の自動計算表示でも利用する。
+export { estimatePension } from './tax';
+
 // 投資枠のバリデーション補助(NISA 枠の初期保有額合計を求める。UI の上限警告に使う)。
 export { nisaInitialLifetimeUsage } from './investment';
 
