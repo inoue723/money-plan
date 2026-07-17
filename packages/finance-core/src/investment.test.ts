@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { CAPITAL_GAINS_TAX_RATE, NISA_ANNUAL_LIMIT, NISA_LIFETIME_LIMIT } from './constants';
 import {
+  accountContributionStartAge,
   initInvestmentState,
   investmentAccountValuesBeforeWithdrawal,
   stepInvestment,
@@ -9,22 +10,42 @@ import {
 } from './investment';
 import type { InvestmentAccount, InvestmentInput } from './types';
 
-/** テスト用の投資枠を作る(必要な項目だけ上書き)。 */
-const makeAccount = (overrides: Partial<InvestmentAccount> = {}): InvestmentAccount => ({
-  name: 'test',
-  accountType: 'nisa',
-  owner: 'self',
-  initialHolding: 0,
-  monthlyAmount: 0,
-  annualReturn: 0,
-  startAge: 30,
-  endAge: 65,
-  withdrawals: [],
-  ...overrides,
-});
+/**
+ * テスト用の投資枠の上書き。新形式の `contributions` に加え、旧来のテストを簡潔に保つための
+ * ショートハンド `monthlyAmount` / `startAge` / `endAge`(単一の月額積立)を受け付ける。
+ */
+type AccountOverrides = Partial<InvestmentAccount> & {
+  monthlyAmount?: number;
+  startAge?: number;
+  endAge?: number;
+};
+
+/**
+ * テスト用の投資枠を作る(必要な項目だけ上書き)。
+ *
+ * 積立は新形式(`contributions`)で持つ。ショートハンドで `monthlyAmount` / `startAge` / `endAge` を
+ * 渡すと「両端を含む月額積立 1 件」に変換する。旧仕様は終了年齢「未満」まで積み立てていた
+ * (age < endAge)ため、両端含む新仕様に合わせて **endAge を 1 引く**(例: endAge 65 → 64 歳まで積立)。
+ * `contributions` を明示した場合はそれを優先する。
+ */
+const makeAccount = (overrides: AccountOverrides = {}): InvestmentAccount => {
+  const { monthlyAmount = 0, startAge = 30, endAge = 65, contributions, ...rest } = overrides;
+  return {
+    name: 'test',
+    accountType: 'nisa',
+    owner: 'self',
+    initialHolding: 0,
+    annualReturn: 0,
+    contributions: contributions ?? [
+      { type: 'monthly', startAge, endAge: endAge - 1, monthlyAmount },
+    ],
+    withdrawals: [],
+    ...rest,
+  };
+};
 
 /** 1 枠だけの投資設定。 */
-const oneAccount = (overrides: Partial<InvestmentAccount> = {}): InvestmentInput => ({
+const oneAccount = (overrides: AccountOverrides = {}): InvestmentInput => ({
   accounts: [makeAccount(overrides)],
 });
 
@@ -199,6 +220,133 @@ describe('stepInvestment - 積立終了', () => {
     const atStart = stepInvestment(prev, { age: 40, investment });
     expect(atStart.contribution).toBe(60); // 5 × 12
     expect(atStart.state.accounts[0]!.costBasis).toBeCloseTo(60, 10);
+  });
+});
+
+describe('stepInvestment - 年齢別の月額積立(複数 monthly)', () => {
+  /** 40〜45 歳は月 5 万、46〜50 歳は月 1 万、それ以外は積立なしの枠。 */
+  const investment = oneAccount({
+    accountType: 'nisa',
+    annualReturn: 0,
+    contributions: [
+      { type: 'monthly', startAge: 40, endAge: 45, monthlyAmount: 5 },
+      { type: 'monthly', startAge: 46, endAge: 50, monthlyAmount: 1 },
+    ],
+  });
+
+  it('年齢期間ごとに異なる月額を積み立てる(両端を含む)', () => {
+    const empty = initInvestmentState(investment.accounts);
+    // 開始前(39)は積立なし。
+    expect(stepInvestment(empty, { age: 39, investment }).contribution).toBe(0);
+    // 第1期間の開始年(40)と終了年(45)は月 5 万 → 年 60 万。
+    expect(stepInvestment(empty, { age: 40, investment }).contribution).toBe(60);
+    expect(stepInvestment(empty, { age: 45, investment }).contribution).toBe(60);
+    // 第2期間(46〜50)は月 1 万 → 年 12 万。
+    expect(stepInvestment(empty, { age: 46, investment }).contribution).toBe(12);
+    expect(stepInvestment(empty, { age: 50, investment }).contribution).toBe(12);
+    // 期間外(51)は積立なし。
+    expect(stepInvestment(empty, { age: 51, investment }).contribution).toBe(0);
+  });
+
+  it('期間が重複する月額積立は当年に合算される', () => {
+    const overlap = oneAccount({
+      accountType: 'taxable',
+      annualReturn: 0,
+      contributions: [
+        { type: 'monthly', startAge: 40, endAge: 50, monthlyAmount: 3 },
+        { type: 'monthly', startAge: 45, endAge: 55, monthlyAmount: 2 },
+      ],
+    });
+    const empty = initInvestmentState(overlap.accounts);
+    // 45 歳は両期間に該当 → (3 + 2) × 12 = 60。
+    expect(stepInvestment(empty, { age: 45, investment: overlap }).contribution).toBe(60);
+    // 41 歳は第1期間のみ → 3 × 12 = 36。
+    expect(stepInvestment(empty, { age: 41, investment: overlap }).contribution).toBe(36);
+  });
+});
+
+describe('stepInvestment - 一括投資(lumpSum contribution)', () => {
+  it('指定年齢に一括投資し、簿価・評価額に反映される', () => {
+    const investment = oneAccount({
+      accountType: 'taxable',
+      annualReturn: 0,
+      contributions: [{ type: 'lumpSum', age: 40, amount: 1000 }],
+    });
+    const empty = initInvestmentState(investment.accounts);
+
+    // 対象年齢の前(39)は投資なし。
+    expect(stepInvestment(empty, { age: 39, investment }).contribution).toBe(0);
+    // 40 歳に 1000 万を一括投資 → 評価額・簿価に反映。
+    const at = stepInvestment(empty, { age: 40, investment });
+    expect(at.contribution).toBe(1000);
+    expect(at.state.accounts[0]!.value).toBeCloseTo(1000, 10);
+    expect(at.state.accounts[0]!.costBasis).toBeCloseTo(1000, 10);
+    // 翌年(41)は一括投資なし。
+    expect(stepInvestment(at.state, { age: 41, investment }).contribution).toBe(0);
+  });
+
+  it('月額積立と一括投資が同一年に該当すると合算して投資する', () => {
+    const investment = oneAccount({
+      accountType: 'taxable',
+      annualReturn: 0,
+      contributions: [
+        { type: 'monthly', startAge: 30, endAge: 50, monthlyAmount: 5 },
+        { type: 'lumpSum', age: 40, amount: 1000 },
+      ],
+    });
+    const empty = initInvestmentState(investment.accounts);
+    // 40 歳: 月 5 万 × 12 = 60 + 一括 1000 = 1060。
+    expect(stepInvestment(empty, { age: 40, investment }).contribution).toBe(1060);
+    // 41 歳: 月額のみ 60。
+    expect(stepInvestment(empty, { age: 41, investment }).contribution).toBe(60);
+  });
+
+  it('一括投資は初年の月割(#51)で按分しない(月額積立は按分する)', () => {
+    const investment = oneAccount({
+      accountType: 'taxable',
+      annualReturn: 0,
+      contributions: [
+        { type: 'monthly', startAge: 30, endAge: 50, monthlyAmount: 5 },
+        { type: 'lumpSum', age: 30, amount: 1000 },
+      ],
+    });
+    const empty = initInvestmentState(investment.accounts);
+    // 7 月開始相当(monthFactor 0.5): 月額は 60 × 0.5 = 30、一括は按分せず 1000 → 計 1030。
+    const at = stepInvestment(empty, { age: 30, investment, monthFactor: 0.5 });
+    expect(at.contribution).toBe(1030);
+  });
+
+  it('NISA 枠の一括投資は年間投資上限(360万)でクランプされ、超過分は預金に残る', () => {
+    const investment = oneAccount({
+      accountType: 'nisa',
+      annualReturn: 0,
+      contributions: [{ type: 'lumpSum', age: 40, amount: 1000 }],
+    });
+    const empty = initInvestmentState(investment.accounts);
+    const at = stepInvestment(empty, { age: 40, investment });
+    // 年間上限 360 万まで投資、残り 640 万は投資されず預金に残る。
+    expect(at.contribution).toBe(NISA_ANNUAL_LIMIT);
+    expect(at.uninvested).toBe(1000 - NISA_ANNUAL_LIMIT);
+  });
+});
+
+describe('accountContributionStartAge', () => {
+  it('全積立設定のうち最も早い年齢を返す(月額の startAge・一括の age を含む)', () => {
+    expect(
+      accountContributionStartAge(
+        makeAccount({
+          contributions: [
+            { type: 'monthly', startAge: 45, endAge: 50, monthlyAmount: 1 },
+            { type: 'lumpSum', age: 35, amount: 100 },
+            { type: 'monthly', startAge: 40, endAge: 44, monthlyAmount: 5 },
+          ],
+        }),
+      ),
+    ).toBe(35);
+  });
+
+  it('積立設定が無い枠は undefined を返す', () => {
+    expect(accountContributionStartAge(makeAccount({ contributions: [] }))).toBeUndefined();
   });
 });
 
@@ -1030,7 +1178,9 @@ describe('stepInvestment - 名義ごとの NISA 上限(#52)', () => {
 describe('stepInvestment の accountValuesBeforeWithdrawal(取崩前評価額。#72)', () => {
   it('取崩処理の適用前(運用成長後)の枠評価額を返す。取崩後の state.value より大きい', () => {
     // 課税枠: 初期保有 1000 万・利回り 10%・当年に 200 万を一括取崩。
-    const prev = initInvestmentState([makeAccount({ accountType: 'taxable', initialHolding: 1000 })]);
+    const prev = initInvestmentState([
+      makeAccount({ accountType: 'taxable', initialHolding: 1000 }),
+    ]);
     const investment = oneAccount({
       accountType: 'taxable',
       initialHolding: 1000,

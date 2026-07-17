@@ -14,6 +14,18 @@
  * ```
  * 当年の運用益(評価益)は「成長分」= (前年資産 + 積立額) × 利回り とする。
  *
+ * ## 積立(contributions)
+ * 各投資枠は積立設定を**複数**持てる(`InvestmentAccount.contributions`。空配列 = 積立なし)。
+ * 設定は判別可能union(`ContributionSetting`)で 2 種類ある:
+ *
+ *   - **月額積立(monthly)**: `startAge`〜`endAge`(両端を含む)の間、毎月 `monthlyAmount` を積み立てる。
+ *     年齢期間で分ければ「40〜45 歳は月 5 万、46〜50 歳は月 1 万」のように年齢別の積立額を表せる。
+ *   - **一括投資(lumpSum)**: `age` の年に `amount`(万円)を一度だけ投資する(例: 40 歳で 1000 万)。
+ *
+ * 当年の積立額 = (該当する月額積立の月額合計 × 12 × 月割係数) + (該当する一括投資の合計)。
+ * 月額積立は経常収支として初年の月割(#51)で按分するが、一括投資は一時収支のため**按分しない**
+ * (ライフイベント・退職金と同じ扱い)。NISA 枠は積立額を投資上限(下記)でクランプする。
+ *
  * ## 取り崩し(#69)
  * 各投資枠は取り崩し設定を**複数**持てる(`InvestmentAccount.withdrawals`。空配列 = 取り崩しなし)。
  * 設定は判別可能union(`WithdrawalSetting`)で 2 種類ある:
@@ -67,6 +79,7 @@ import { CAPITAL_GAINS_TAX_RATE, NISA_ANNUAL_LIMIT, NISA_LIFETIME_LIMIT } from '
 import type {
   AccountOwner,
   AccountType,
+  ContributionSetting,
   InvestmentAccount,
   InvestmentInput,
   LumpSumWithdrawal,
@@ -98,6 +111,39 @@ const ownerOf = (account: InvestmentAccount): AccountOwner =>
 
 /** 枠の初期保有額の時価(評価額の初期値)。負値は 0 に丸める。 */
 const initialValueOf = (account: InvestmentAccount): number => Math.max(0, account.initialHolding);
+
+/**
+ * 枠の実質的な積立開始年齢(= 全積立設定のうち最も早い年齢)。積立設定が 1 つも無ければ undefined。
+ * iDeCo・小規模企業共済の一時金受取(#73)の勤続年数(受取年齢 − 積立開始年齢)算定に用いる。
+ * 月額積立は `startAge`、一括投資は `age` を対象年齢とみなす(金額 0 の設定も対象に含める)。
+ */
+export const accountContributionStartAge = (account: InvestmentAccount): number | undefined => {
+  const ages = (account.contributions ?? []).map((c) =>
+    c.type === 'monthly' ? c.startAge : c.age,
+  );
+  return ages.length > 0 ? Math.min(...ages) : undefined;
+};
+
+/**
+ * 当年に該当する積立額を求める(内部用)。
+ * - `monthly`: 期間(両端含む)に該当する月額の合計(万円/月)。呼び出し側で ×12×月割係数する。
+ * - `lump`: 当年齢に該当する一括投資額の合計(万円)。月割で按分しない一時収支。
+ */
+const contributionsForAge = (
+  contributions: ContributionSetting[],
+  age: number,
+): { monthly: number; lump: number } => {
+  let monthly = 0;
+  let lump = 0;
+  for (const c of contributions) {
+    if (c.type === 'monthly') {
+      if (age >= c.startAge && age <= c.endAge) monthly += c.monthlyAmount;
+    } else if (age === c.age) {
+      lump += c.amount;
+    }
+  }
+  return { monthly, lump };
+};
 
 /**
  * 枠の初期保有額の簿価(取得原価)。取得価額 `acquisitionCost` が指定されていればそれを、
@@ -297,20 +343,22 @@ const desiredWithdrawal = (setting: WithdrawalSetting, age: number, value: numbe
  * 1 つの投資枠を 1 年分更新する純粋関数(内部用)。
  *
  * 計算順序(SPEC.md 2.3.1):
- * 1. 積立(積立終了年齢に達していなければ monthlyAmount × 12。ただし contributionCap でクランプ)
+ * 1. 積立(当年に該当する月額積立 × 12 + 一括投資を合算。ただし contributionCap でクランプ)
  * 2. 運用(積立後の元本に利回りを乗じて成長させ、評価益を確定)
  * 3. 取り崩し(当年に該当する設定を spread → lumpSum の順に順次適用し、課税口座なら評価益按分で課税)
  */
 const stepAccount = (prev: AccountState, params: AccountStepParams): AccountStepResult => {
   const { account, age, contributionCap, monthFactor } = params;
-  const { accountType, monthlyAmount, annualReturn, startAge, endAge } = account;
-  // 旧データ(#69 以前の `withdrawal`)が migration を経ずに渡ってもクラッシュしないよう空配列に倒す。
+  const { accountType, annualReturn } = account;
+  // 旧データが migration を経ずに渡ってもクラッシュしないよう空配列に倒す。
   const withdrawals = account.withdrawals ?? [];
+  const contributions = account.contributions ?? [];
 
   // --- 1. 積立(上限でクランプ) -------------------------------------------
-  // 積立開始年齢「以降」かつ終了年齢「未満」の間のみ積立(= startAge <= age < endAge)。
-  // 初年(#51)は月割係数で按分する(例: 7 月開始なら年額の 6/12)。
-  const desired = age >= startAge && age < endAge ? monthlyAmount * 12 * monthFactor : 0;
+  // 当年に該当する月額積立・一括投資を合算する。月額積立(経常)は初年(#51)の月割係数で
+  // 按分するが、一括投資(一時収支)は按分しない(例: 40 歳で 1000 万は初年でも全額)。
+  const { monthly, lump } = contributionsForAge(contributions, age);
+  const desired = Math.max(0, monthly * 12 * monthFactor + lump);
   const contribution = Math.max(0, Math.min(desired, contributionCap));
   const uninvested = desired - contribution;
   const principal = prev.value + contribution;
@@ -438,9 +486,15 @@ export const stepInvestment = (
     if (isMutualAidAccount(account.accountType)) {
       mutualAidContributionByOwner[owner] += step.contribution;
       mutualAidSpreadByOwner[owner] += step.spreadWithdrawal;
+      // 勤続年数 = 受取年齢 − 積立開始年齢(#73。積立設定が無ければ勤続 0 年扱い。
+      // 0 以上に丸め、控除計算側で最低 1 年に補正)。
+      const contributionStart = accountContributionStartAge(account) ?? age;
       for (const amount of step.lumpSumWithdrawals) {
-        // 勤続年数 = 受取年齢 − 積立開始年齢(#73。0 以上に丸め、控除計算側で最低 1 年に補正)。
-        mutualAidLumpSums.push({ owner, amount, yearsOfService: Math.max(0, age - account.startAge) });
+        mutualAidLumpSums.push({
+          owner,
+          amount,
+          yearsOfService: Math.max(0, age - contributionStart),
+        });
       }
     }
 

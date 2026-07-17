@@ -30,7 +30,9 @@
  *    名前が「家賃」の ExpenseItem を家賃専用型 `expense.rent` へ変換、
  *    v3 → v4: `spouse.income`(固定年収)を本人と同等の `IncomeInput` 構造へ変換(#49)し、
  *    投資枠に名義 `owner` を追加して既存枠はすべて `'self'`(本人)とする(#52)、
- *    v5 → v6: 投資枠の取り崩しを単一の年額指定 `withdrawal` から複数設定 `withdrawals` へ再設計(#69))。
+ *    v5 → v6: 投資枠の取り崩しを単一の年額指定 `withdrawal` から複数設定 `withdrawals` へ再設計(#69)、
+ *    v6 → v7: 投資枠の積立を単一の月額 + 積立開始/終了年齢から複数の積立設定 `contributions`
+ *    (年齢別の月額積立 + 一括投資)へ再設計)。
  */
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
@@ -38,6 +40,7 @@ import { runSimulation } from '@money-plan/finance-core';
 import type {
   AccountOwner,
   BasicInput,
+  ContributionSetting,
   ExpenseInput,
   FamilyInput,
   IncomeInput,
@@ -115,17 +118,16 @@ export const DEFAULT_INPUT: SimulationInput = {
   },
   events: [],
   investment: {
-    // デフォルトは現行相当の 1 枠(NISA)。SPEC.md 2.2 の各デフォルト値に準拠。
+    // デフォルトは 1 枠(本人 NISA)。SPEC.md 2.2 の各デフォルト値に準拠。
     accounts: [
       {
         name: 'NISA',
         accountType: 'nisa', // NISA 利用(非課税枠内の運用益を非課税)
         owner: 'self', // 名義。デフォルトは本人(#52)
         initialHolding: 0, // 現在投資額(初期保有額・万円)。デフォルト 0
-        monthlyAmount: 0, // SPEC.md 2.2 デフォルト 0
         annualReturn: 3.0, // SPEC.md 2.2 デフォルト 3.0%
-        startAge: 30, // 積立開始年齢。デフォルトは現在年齢(30)
-        endAge: 65, // 積立終了年齢。デフォルトは退職年齢(65)
+        // 積立設定。デフォルトは現在年齢(30)〜退職前年(64)の月額積立 1 件(月額 0)。
+        contributions: [{ type: 'monthly', startAge: 30, endAge: 64, monthlyAmount: 0 }],
         withdrawals: [], // 取り崩し設定(#69)。空配列 = 取り崩しなし
       },
     ],
@@ -189,7 +191,7 @@ export interface ImportedPlan {
  * 永続化スキーマのバージョン。`tabs` や入力形状(`SimulationInput`)の構造を
  * 破壊的に変更したら増やし、`persist` の `migrate` で旧データを変換する。
  */
-export const PERSIST_VERSION = 6;
+export const PERSIST_VERSION = 7;
 
 /** localStorage のキー(SPEC.md 4.1: ローカルのみに保存)。 */
 export const PERSIST_KEY = 'money-plan/simulation';
@@ -333,6 +335,47 @@ const migrateWithdrawals = (input: SimulationInput): SimulationInput => ({
   },
 });
 
+/** v6 以前の投資枠の積立フィールド(単一の月額 + 積立開始/終了年齢)。年齢別積立・一括投資の導入前の旧形式。 */
+interface LegacyContribution {
+  /** 毎月の積立額(万円)。 */
+  monthlyAmount?: number;
+  /** 積立開始年齢(歳。この年齢「以降」に積立を開始する = startAge <= age < endAge)。 */
+  startAge?: number;
+  /** 積立終了年齢(歳。旧仕様は終了年齢「未満」まで積み立てる = age < endAge)。 */
+  endAge?: number;
+}
+
+/**
+ * v6 → v7 の入力マイグレーション。投資枠の積立を、単一の月額(`monthlyAmount` /
+ * `startAge` / `endAge`)から複数の積立設定リスト `contributions`(判別可能union)へ移行する。
+ *
+ * 旧 `{ monthlyAmount, startAge, endAge }` は
+ * `contributions: [{ type: 'monthly', startAge, endAge: endAge - 1, monthlyAmount }]` に変換する。
+ * 旧仕様の積立期間は「終了年齢未満まで(startAge <= age < endAge)」だったため、両端を含む
+ * 新仕様(startAge <= age <= endAge)に合わせて **endAge を 1 引いて挙動を保つ**
+ * (例: 旧 endAge 65 = 64 歳まで積立 → 新 endAge 64)。移行後の計算結果は従来と一致する。
+ *
+ * 既に `contributions` を持つ枠(v7 以降)はそのまま維持する。
+ */
+const migrateContributions = (input: SimulationInput): SimulationInput => ({
+  ...input,
+  investment: {
+    ...input.investment,
+    accounts: input.investment.accounts.map((account) => {
+      const legacy = account as InvestmentAccount & LegacyContribution;
+      // 旧キー(monthlyAmount / startAge / endAge)は残さず取り除き、新形式 contributions に一本化する。
+      const { monthlyAmount, startAge, endAge, ...rest } = legacy;
+      if (Array.isArray(rest.contributions)) return rest; // 既に新形式なら維持
+      const s = typeof startAge === 'number' ? startAge : 30;
+      const e = typeof endAge === 'number' ? endAge : 65;
+      const contributions: ContributionSetting[] = [
+        { type: 'monthly', startAge: s, endAge: e - 1, monthlyAmount: monthlyAmount ?? 0 },
+      ];
+      return { ...rest, contributions };
+    }),
+  },
+});
+
 /**
  * プラン単位の入力マイグレーション(#71 JSON import 用)。
  * export ファイルに書かれた `version` を起点に、現在の `PERSIST_VERSION` まで、
@@ -348,6 +391,7 @@ export const migratePlanInput = (input: SimulationInput, fromVersion: number): S
   if (fromVersion < 3) result = migrateInputV2toV3(result);
   if (fromVersion < 4) result = migrateInputV3toV4(result);
   if (fromVersion < 6) result = migrateWithdrawals(result);
+  if (fromVersion < 7) result = migrateContributions(result);
   return result;
 };
 
@@ -670,6 +714,20 @@ export const useSimulationStore = create<SimulationState>()(
               ...t,
               savedInput: migrateWithdrawals(t.savedInput),
               draftInput: migrateWithdrawals(t.draftInput),
+            })),
+          };
+        }
+
+        if (version < 7) {
+          // v6 → v7: 投資枠の積立を単一の月額 + 積立開始/終了年齢から複数の積立設定 `contributions`
+          // (月額積立 + 一括投資)へ移行する。年齢別の積立額・一括投資を同一枠で表せるようにする。
+          data = {
+            ...data,
+            input: migrateContributions(data.input),
+            tabs: data.tabs.map((t) => ({
+              ...t,
+              savedInput: migrateContributions(t.savedInput),
+              draftInput: migrateContributions(t.draftInput),
             })),
           };
         }

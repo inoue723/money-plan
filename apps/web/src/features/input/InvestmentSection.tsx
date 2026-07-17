@@ -1,20 +1,23 @@
 /**
  * F-05 投資設定セクション(#9 / #33)。
  *
- * 複数の投資枠(口座)を追加・削除・編集できる。枠ごとに 名前 / 種別(NISA・課税口座)/
- * 毎月積立額 / 想定利回り(0〜15%)/ 積立開始年齢 / 積立終了年齢 / 取り崩し設定 を入力する。
- * NISA 枠には制度上の投資上限(生涯 1800 万・年間 360 万)が全 NISA 枠合算で適用され、
- * 上限超過分は積み立てられず預金に残る(計算は finance-core 側)。
+ * 投資枠(口座)は「名義(本人 / 配偶者)× 種別(NISA・特定口座・iDeCo・小規模企業共済)」の
+ * 組み合わせで追加する。同じ名義・種別の枠は 1 つまで(重複追加は不可)。枠ごとに
+ * 現在投資額 / 取得価額 / 想定利回り / 積立設定 / 取り崩し設定 を入力する。
  *
- * 取り崩し(#69)は枠ごとに**複数**設定できる。分割取崩(期間で均等に取り崩し切る)と
- * 一括取崩(指定年齢に指定額)の 2 種類をリストで追加・削除する。期間・年齢が重複する設定は
- * 警告を表示するが、保存は妨げない(計算側は定義順に順次適用する)。
+ * 積立(contributions)は枠ごとに**複数**設定できる。月額積立(年齢期間で均等に毎月積立)と
+ * 一括投資(指定年齢に一度だけ投資)の 2 種類をリストで追加・削除する。月額積立を年齢期間で
+ * 分けることで「40〜45 歳は月 5 万、46〜50 歳は月 1 万」のように年齢別の積立額を表せる。
+ *
+ * NISA 枠には制度上の投資上限(生涯 1800 万・年間 360 万)が名義ごとに適用され、上限超過分は
+ * 積み立てられず預金に残る(計算は finance-core 側)。取り崩し(#69)も枠ごとに複数設定できる。
  */
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import type {
   AccountOwner,
   AccountType,
   Child,
+  ContributionSetting,
   InvestmentAccount,
   WithdrawalSetting,
 } from '@money-plan/finance-core';
@@ -29,43 +32,135 @@ import { AgeNumberField } from '../../components/AgeNumberField';
 import { SelectField } from '../../components/SelectField';
 import { formatChildAgeLines } from '../../components/childAges';
 
-const ACCOUNT_TYPE_OPTIONS: { value: AccountType; label: string }[] = [
-  { value: 'nisa', label: 'NISA(非課税)' },
-  { value: 'taxable', label: '課税口座(特定口座等)' },
-  { value: 'ideco', label: 'iDeCo(拠出全額所得控除)' },
-  { value: 'mutualAid', label: '小規模企業共済(拠出全額所得控除)' },
-];
+/** 口座種別の表示ラベル。 */
+const ACCOUNT_TYPE_LABEL: Record<AccountType, string> = {
+  nisa: 'NISA',
+  taxable: '特定口座',
+  ideco: 'iDeCo',
+  mutualAid: '小規模企業共済',
+};
+
+/** 追加メニューに並べる口座種別の順序。 */
+const ACCOUNT_TYPES: AccountType[] = ['nisa', 'taxable', 'ideco', 'mutualAid'];
 
 /**
  * 口座種別ごとの補足ヒント(#73)。iDeCo・小規模企業共済は拠出が全額所得控除になる旨と拠出上限の目安を示す。
  * 拠出上限はモデル化せず(簡易化)、目安の注意書きに留める。
  */
 const ACCOUNT_TYPE_HINT: Record<AccountType, string | undefined> = {
-  nisa: '生涯1800万・年間360万まで',
-  taxable: undefined,
+  nisa: '運用益は非課税(生涯1800万・年間360万まで)',
+  taxable: '取崩時に運用益へ約20%課税',
   ideco: '拠出額は全額所得控除。上限は職業により月1.2〜6.8万円が目安',
   mutualAid: '拠出額は全額所得控除。上限は月7万円が目安(個人事業主・小規模法人役員向け)',
 };
 
-const OWNER_OPTIONS: { value: AccountOwner; label: string }[] = [
-  { value: 'self', label: '本人' },
-  { value: 'spouse', label: '配偶者' },
-];
+/** 名義の全リスト(追加メニューの並び順)。 */
+const ACCOUNT_OWNERS: AccountOwner[] = ['self', 'spouse'];
 
 const OWNER_LABEL: Record<AccountOwner, string> = { self: '本人', spouse: '配偶者' };
 
-/** 新規追加時の既定枠(課税口座)。積立開始年齢は現在年齢を既定にする。名義は本人。 */
-const createDefaultAccount = (currentAge: number): InvestmentAccount => ({
-  name: '特定口座',
-  accountType: 'taxable',
-  owner: 'self',
+/** 枠の表示名(名義 × 種別)。 */
+const accountLabel = (account: InvestmentAccount): string =>
+  `${ACCOUNT_TYPE_LABEL[account.accountType]}(${OWNER_LABEL[account.owner]})`;
+
+/**
+ * 名義・種別を指定して新規枠を作る。積立は「現在年齢〜退職前年(64)の月額積立 1 件(月額 0)」を
+ * 初期値にする(ユーザーが金額・期間を編集する起点)。名義・種別は追加時に確定し、以降は変更しない。
+ */
+const createAccount = (
+  owner: AccountOwner,
+  accountType: AccountType,
+  currentAge: number,
+): InvestmentAccount => ({
+  name: ACCOUNT_TYPE_LABEL[accountType],
+  accountType,
+  owner,
   initialHolding: 0,
-  monthlyAmount: 0,
   annualReturn: 3.0,
-  startAge: currentAge,
-  endAge: 65,
+  contributions: [
+    { type: 'monthly', startAge: currentAge, endAge: Math.max(currentAge, 64), monthlyAmount: 0 },
+  ],
   withdrawals: [], // 取り崩し設定(#69)。空配列 = 取り崩しなし
 });
+
+// ---------------------------------------------------------------------------
+// 積立設定(contributions)
+// ---------------------------------------------------------------------------
+
+/** 積立種別の選択肢。 */
+const CONTRIBUTION_TYPE_OPTIONS: { value: ContributionSetting['type']; label: string }[] = [
+  { value: 'monthly', label: '月額積立(期間で毎月)' },
+  { value: 'lumpSum', label: '一括投資(指定年齢に一度)' },
+];
+
+/**
+ * 「+ 積立を追加」の既定設定。既存の月額積立の直後(最大終了年齢+1)から退職前年(64)まで、
+ * 月額 0 の月額積立を初期値にする。
+ */
+const createDefaultContribution = (
+  contributions: ContributionSetting[],
+  currentAge: number,
+): ContributionSetting => {
+  const monthlyEnds = contributions
+    .filter((c): c is Extract<ContributionSetting, { type: 'monthly' }> => c.type === 'monthly')
+    .map((c) => c.endAge);
+  const startAge = monthlyEnds.length > 0 ? Math.max(...monthlyEnds) + 1 : currentAge;
+  return { type: 'monthly', startAge, endAge: Math.max(startAge, 64), monthlyAmount: 0 };
+};
+
+/**
+ * 積立設定の種別を切り替える。種別ごとに持つフィールドが異なるため、入力済みの年齢を引き継ぎつつ
+ * 新しい種別のオブジェクトを組み立てる。
+ */
+const changeContributionType = (
+  setting: ContributionSetting,
+  type: ContributionSetting['type'],
+): ContributionSetting => {
+  if (type === setting.type) return setting;
+  if (type === 'monthly') {
+    // 一括 → 月額: 対象年齢を開始年齢として引き継ぐ(終了年齢は同年、月額は未入力 = 0 から)。
+    const age = (setting as Extract<ContributionSetting, { type: 'lumpSum' }>).age;
+    return { type: 'monthly', startAge: age, endAge: age, monthlyAmount: 0 };
+  }
+  // 月額 → 一括: 開始年齢を対象年齢として引き継ぐ(投資額は未入力 = 0 から)。
+  const startAge = (setting as Extract<ContributionSetting, { type: 'monthly' }>).startAge;
+  return { type: 'lumpSum', age: startAge, amount: 0 };
+};
+
+/**
+ * 積立設定の月額積立どうしの年齢期間の重複・不正(開始 > 終了)を警告する。重複しても保存・計算は
+ * 妨げない(計算側は該当額をすべて合算する)が、意図しない二重積立に気づけるよう警告に留める。
+ */
+const contributionWarnings = (contributions: ContributionSetting[]): string[] => {
+  const warnings: string[] = [];
+  const monthly = contributions
+    .map((c, i) => ({ c, i }))
+    .filter(
+      (x): x is { c: Extract<ContributionSetting, { type: 'monthly' }>; i: number } =>
+        x.c.type === 'monthly',
+    );
+  for (const { c, i } of monthly) {
+    if (c.startAge > c.endAge) {
+      warnings.push(`積立${i + 1}: 開始年齢が終了年齢を超えています。`);
+    }
+  }
+  for (let a = 0; a < monthly.length; a++) {
+    for (let b = a + 1; b < monthly.length; b++) {
+      const p = monthly[a]!;
+      const q = monthly[b]!;
+      if (p.c.startAge <= q.c.endAge && q.c.startAge <= p.c.endAge) {
+        warnings.push(
+          `積立${p.i + 1}と積立${q.i + 1}の年齢期間が重複しています。重複する年は両方を合算して積み立てます。`,
+        );
+      }
+    }
+  }
+  return warnings;
+};
+
+// ---------------------------------------------------------------------------
+// 取り崩し設定(#69)
+// ---------------------------------------------------------------------------
 
 /** 取り崩し種別の選択肢(#69)。 */
 const WITHDRAWAL_TYPE_OPTIONS: { value: WithdrawalSetting['type']; label: string }[] = [
@@ -134,6 +229,14 @@ const overlapWarning = (withdrawals: WithdrawalSetting[], index: number): string
   return undefined;
 };
 
+/** 枠の実質的な積立終了年齢(月額積立の最大終了年齢)。取り崩しの既定開始年齢に使う。 */
+const accountEndAgeOf = (account: InvestmentAccount, fallback: number): number => {
+  const ends = account.contributions
+    .map((c) => (c.type === 'monthly' ? c.endAge : c.age))
+    .filter((n) => Number.isFinite(n));
+  return ends.length > 0 ? Math.max(...ends) : fallback;
+};
+
 export function InvestmentSection() {
   const investment = useSimulationStore((s) => s.input.investment);
   const accounts = investment.accounts;
@@ -174,15 +277,18 @@ export function InvestmentSection() {
     setInvestment({ accounts: accounts.filter((_, i) => i !== index) });
   };
 
-  const addAccount = () => {
-    setInvestment({ accounts: [...accounts, createDefaultAccount(currentAge)] });
+  const addAccount = (owner: AccountOwner, accountType: AccountType) => {
+    setInvestment({ accounts: [...accounts, createAccount(owner, accountType, currentAge)] });
   };
+
+  // 追加済みの (名義, 種別) の組。同じ組は 1 つまで(重複追加を禁止する)。
+  const existingKeys = new Set(accounts.map((a) => `${a.owner}:${a.accountType}`));
 
   // NISA 枠の初期保有額の簿価(取得価額)合計を名義ごとに集計する(#52 / #59)。生涯投資枠
   // (1800 万)は簿価ベースかつ名義ごとに独立適用されるため、いずれかの名義で上限を超える入力は
   // 名義別に警告する。
   const nisaInitialUsage = nisaInitialLifetimeUsage(accounts);
-  const overLimitOwners = OWNER_OPTIONS.map((o) => o.value).filter(
+  const overLimitOwners = ACCOUNT_OWNERS.filter(
     (owner) => nisaInitialUsage[owner] > NISA_LIFETIME_LIMIT,
   );
 
@@ -208,7 +314,7 @@ export function InvestmentSection() {
 
       {hasStaleSpouseAccount && (
         <p className="rounded-md border border-amber-200 bg-amber-50 px-2 py-1 text-[11px] text-amber-700">
-          配偶者名義の投資枠がありますが、このプランには配偶者が設定されていません。名義を本人に変更するか、家族構成で配偶者を追加してください。
+          配偶者名義の投資枠がありますが、このプランには配偶者が設定されていません。枠を削除するか、家族構成で配偶者を追加してください。
         </p>
       )}
 
@@ -218,7 +324,6 @@ export function InvestmentSection() {
           account={account}
           currentAge={currentAge}
           planEndAge={planEndAge}
-          hasSpouse={hasSpouse}
           familyChildren={children}
           valueAtAge={(age) => valueAtAge(i, age)}
           onChange={(next) => updateAccount(i, next)}
@@ -226,13 +331,66 @@ export function InvestmentSection() {
         />
       ))}
 
-      <button
-        type="button"
-        onClick={addAccount}
-        className="rounded-md border border-sky-300 px-2 py-1 text-xs font-medium text-sky-600 hover:bg-sky-50"
-      >
-        + 投資枠を追加
-      </button>
+      <AddAccountMenu hasSpouse={hasSpouse} existingKeys={existingKeys} onAdd={addAccount} />
+    </div>
+  );
+}
+
+/**
+ * 投資枠の追加メニュー。名義(本人 / 配偶者)× 種別(4 種)の組から選んで追加する。
+ * 既に追加済みの組はボタンを無効化し、重複追加を防ぐ。配偶者は家族構成で追加するまで選べない。
+ */
+function AddAccountMenu({
+  hasSpouse,
+  existingKeys,
+  onAdd,
+}: {
+  hasSpouse: boolean;
+  existingKeys: Set<string>;
+  onAdd: (owner: AccountOwner, accountType: AccountType) => void;
+}) {
+  return (
+    <div className="rounded-md border border-dashed border-slate-300 p-2">
+      <p className="mb-1 text-xs font-medium text-slate-600">投資枠を追加</p>
+      <p className="mb-2 text-[11px] text-slate-400">
+        名義と種別の組ごとに 1 枠まで追加できます(同じ組は追加済みだと選べません)。
+      </p>
+      <div className="flex flex-col gap-2">
+        {ACCOUNT_OWNERS.map((owner) => {
+          const ownerDisabled = owner === 'spouse' && !hasSpouse;
+          return (
+            <div key={owner} className="flex items-center gap-2">
+              <span className="w-10 shrink-0 text-[11px] font-medium text-slate-500">
+                {OWNER_LABEL[owner]}
+              </span>
+              <div className="flex flex-wrap gap-1">
+                {ACCOUNT_TYPES.map((accountType) => {
+                  const exists = existingKeys.has(`${owner}:${accountType}`);
+                  const disabled = exists || ownerDisabled;
+                  return (
+                    <button
+                      key={accountType}
+                      type="button"
+                      onClick={() => onAdd(owner, accountType)}
+                      disabled={disabled}
+                      title={
+                        ownerDisabled
+                          ? '配偶者は家族構成で追加すると選べます'
+                          : exists
+                            ? '追加済みです'
+                            : undefined
+                      }
+                      className="rounded-md border border-sky-300 px-2 py-1 text-xs font-medium text-sky-600 hover:bg-sky-50 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-300 disabled:hover:bg-transparent"
+                    >
+                      + {ACCOUNT_TYPE_LABEL[accountType]}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -242,7 +400,6 @@ function AccountFields({
   account,
   currentAge,
   planEndAge,
-  hasSpouse,
   familyChildren,
   valueAtAge,
   onChange,
@@ -252,7 +409,6 @@ function AccountFields({
   currentAge: number;
   /** シミュレーション終了年齢(basic.endAge)。分割取崩の既定の終了年齢に使う(#69)。 */
   planEndAge: number;
-  hasSpouse: boolean;
   /** 子ども一覧(一括取崩の対象年齢 tooltip に子ども年齢を併記する。#47 / #72)。 */
   familyChildren: Child[];
   /**
@@ -263,8 +419,28 @@ function AccountFields({
   onChange: (next: InvestmentAccount) => void;
   onRemove: () => void;
 }) {
+  // 積立設定。空配列 = 積立なし。
+  const contributions = account.contributions;
   // 取り崩し設定(#69)。空配列 = 取り崩しなし。
   const withdrawals = account.withdrawals;
+
+  const updateContribution = (index: number, next: ContributionSetting) => {
+    onChange({
+      ...account,
+      contributions: contributions.map((c, i) => (i === index ? next : c)),
+    });
+  };
+
+  const removeContribution = (index: number) => {
+    onChange({ ...account, contributions: contributions.filter((_, i) => i !== index) });
+  };
+
+  const addContribution = () => {
+    onChange({
+      ...account,
+      contributions: [...contributions, createDefaultContribution(contributions, currentAge)],
+    });
+  };
 
   const updateWithdrawal = (index: number, next: WithdrawalSetting) => {
     onChange({
@@ -280,27 +456,214 @@ function AccountFields({
   const addWithdrawal = () => {
     onChange({
       ...account,
-      withdrawals: [...withdrawals, createDefaultWithdrawal(account.endAge, planEndAge)],
+      withdrawals: [
+        ...withdrawals,
+        createDefaultWithdrawal(accountEndAgeOf(account, planEndAge), planEndAge),
+      ],
     });
   };
 
-  // 配偶者なしのプランでは配偶者名義を選べない。ただし既に配偶者名義の枠(旧データ等)は
-  // 値を表示できるよう選択肢に残す(上位で警告を出す)。
-  const ownerOptions =
-    hasSpouse || account.owner === 'spouse' ? OWNER_OPTIONS : [OWNER_OPTIONS[0]!];
+  const warnings = contributionWarnings(contributions);
+  // 投資枠ごとに畳み込み(開閉)できるようにする。既定は開いた状態。
+  const [open, setOpen] = useState(true);
 
   return (
     <div className="rounded-md border border-slate-200 p-2">
-      <div className="mb-2 flex items-end gap-2">
-        <label className="flex flex-1 flex-col gap-1">
-          <span className="text-xs font-medium text-slate-600">枠の名前</span>
-          <input
-            type="text"
-            className="w-full rounded-md border border-slate-300 bg-white px-2 py-1 text-sm text-slate-800 focus:border-sky-500 focus:outline-none focus:ring-1 focus:ring-sky-500"
-            value={account.name}
-            onChange={(e) => onChange({ ...account, name: e.target.value })}
+      <div className="mb-2 flex items-center justify-between gap-2">
+        {/* 枠ヘッダー全体を開閉トグルにする(削除ボタンはネスト不可のため別ボタンとして分離)。 */}
+        <button
+          type="button"
+          aria-expanded={open}
+          onClick={() => setOpen((v) => !v)}
+          className="flex flex-1 items-center gap-2 text-left"
+        >
+          <svg
+            className={`h-4 w-4 shrink-0 text-slate-400 transition-transform ${open ? 'rotate-180' : ''}`}
+            viewBox="0 0 20 20"
+            fill="currentColor"
+            aria-hidden="true"
+          >
+            <path
+              fillRule="evenodd"
+              d="M5.23 7.21a.75.75 0 011.06.02L10 11.17l3.71-3.94a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z"
+              clipRule="evenodd"
+            />
+          </svg>
+          <span className="min-w-0">
+            <span className="block text-sm font-semibold text-slate-800">
+              {accountLabel(account)}
+            </span>
+            {/* 畳んでいるときは中身が見えないため、積立・取り崩しの件数を要約表示する。 */}
+            {open ? (
+              ACCOUNT_TYPE_HINT[account.accountType] && (
+                <span className="block text-[11px] text-slate-400">
+                  {ACCOUNT_TYPE_HINT[account.accountType]}
+                </span>
+              )
+            ) : (
+              <span className="block text-[11px] text-slate-400">
+                積立 {contributions.length} 件 ・ 取り崩し {withdrawals.length} 件
+              </span>
+            )}
+          </span>
+        </button>
+        <button
+          type="button"
+          onClick={onRemove}
+          className="shrink-0 rounded-md border border-rose-200 px-2 py-1 text-xs text-rose-500 hover:bg-rose-50"
+        >
+          削除
+        </button>
+      </div>
+
+      {!open ? null : (
+        <>
+          <div className="grid grid-cols-2 gap-2">
+            <NumberField
+              label="現在投資額(時価)"
+              value={account.initialHolding}
+              onChange={(v) => onChange({ ...account, initialHolding: v })}
+              min={0}
+              step={0.1}
+              unit="万円"
+              hint="起点で保有中の評価額"
+            />
+            <NumberField
+              label="取得価額(簿価)"
+              value={account.acquisitionCost ?? account.initialHolding}
+              onChange={(v) =>
+                // 時価と同額なら acquisitionCost を保持せず undefined に戻す(=時価を簿価とみなす簡易化)。
+                onChange({
+                  ...account,
+                  acquisitionCost: v === account.initialHolding ? undefined : v,
+                })
+              }
+              min={0}
+              step={0.1}
+              unit="万円"
+              hint={
+                account.accountType === 'nisa'
+                  ? '未入力は時価と同額。簿価が生涯枠を消費'
+                  : '未入力は時価と同額。取崩時の課税に使用'
+              }
+            />
+            <NumberField
+              label="想定利回り"
+              value={account.annualReturn}
+              onChange={(v) => onChange({ ...account, annualReturn: v })}
+              min={0}
+              max={15}
+              step={0.1}
+              unit="%"
+              hint="0〜15%"
+            />
+          </div>
+
+          {/* 積立設定: 月額積立(年齢期間で毎月)と一括投資(指定年齢に一度)を複数登録できる。 */}
+          <div className="mt-2 rounded-md bg-slate-50 p-2">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-medium text-slate-600">積立</span>
+              <span className="text-[11px] text-slate-400">年齢別の月額・一括投資</span>
+            </div>
+
+            {contributions.length === 0 && (
+              <p className="mt-1 text-[11px] text-slate-400">積立の設定はありません。</p>
+            )}
+
+            <div className="mt-2 flex flex-col gap-2">
+              {contributions.map((contribution, i) => (
+                <ContributionFields
+                  key={i}
+                  contribution={contribution}
+                  onChange={(next) => updateContribution(i, next)}
+                  onRemove={() => removeContribution(i)}
+                />
+              ))}
+            </div>
+
+            {warnings.map((w) => (
+              <p key={w} className="mt-1 text-[11px] font-medium text-rose-500">
+                {w}
+              </p>
+            ))}
+
+            <button
+              type="button"
+              onClick={addContribution}
+              className="mt-2 rounded-md border border-sky-300 px-2 py-1 text-xs font-medium text-sky-600 hover:bg-sky-50"
+            >
+              + 積立を追加
+            </button>
+          </div>
+
+          <div className="mt-2 rounded-md bg-slate-50 p-2">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-medium text-slate-600">取り崩し</span>
+              <span className="text-[11px] text-slate-400">老後の投資資産の取り崩し</span>
+            </div>
+
+            {withdrawals.length === 0 && (
+              <p className="mt-1 text-[11px] text-slate-400">取り崩しの設定はありません。</p>
+            )}
+
+            <div className="mt-2 flex flex-col gap-2">
+              {withdrawals.map((withdrawal, i) => (
+                <WithdrawalFields
+                  key={i}
+                  withdrawal={withdrawal}
+                  currentAge={currentAge}
+                  planEndAge={planEndAge}
+                  familyChildren={familyChildren}
+                  valueAtAge={valueAtAge}
+                  warning={overlapWarning(withdrawals, i)}
+                  onChange={(next) => updateWithdrawal(i, next)}
+                  onRemove={() => removeWithdrawal(i)}
+                />
+              ))}
+            </div>
+
+            <button
+              type="button"
+              onClick={addWithdrawal}
+              className="mt-2 rounded-md border border-sky-300 px-2 py-1 text-xs font-medium text-sky-600 hover:bg-sky-50"
+            >
+              + 取り崩しを追加
+            </button>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+/** 1 つの積立設定の入力欄(月額積立 / 一括投資)。 */
+function ContributionFields({
+  contribution,
+  onChange,
+  onRemove,
+}: {
+  contribution: ContributionSetting;
+  onChange: (next: ContributionSetting) => void;
+  onRemove: () => void;
+}) {
+  return (
+    <div className="rounded-md border border-slate-200 bg-white p-2">
+      <div className="flex items-end gap-2">
+        <div className="flex-1">
+          <SelectField
+            label="種別"
+            value={contribution.type}
+            options={CONTRIBUTION_TYPE_OPTIONS}
+            onChange={(v) =>
+              onChange(changeContributionType(contribution, v as ContributionSetting['type']))
+            }
+            hint={
+              contribution.type === 'monthly'
+                ? '期間中は毎月その額を積み立てる'
+                : '指定年齢にその額を一括投資する'
+            }
           />
-        </label>
+        </div>
         <button
           type="button"
           onClick={onRemove}
@@ -310,124 +673,56 @@ function AccountFields({
         </button>
       </div>
 
-      <div className="grid grid-cols-2 gap-2">
-        <SelectField
-          label="種別"
-          value={account.accountType}
-          options={ACCOUNT_TYPE_OPTIONS}
-          onChange={(v) => onChange({ ...account, accountType: v as AccountType })}
-          hint={ACCOUNT_TYPE_HINT[account.accountType]}
-        />
-        <SelectField
-          label="名義"
-          value={account.owner}
-          options={ownerOptions}
-          onChange={(v) => onChange({ ...account, owner: v as AccountOwner })}
-          hint={
-            !hasSpouse
-              ? '配偶者は家族構成で追加すると選択可'
-              : account.accountType === 'nisa'
-                ? '名義ごとに生涯・年間枠を適用'
-                : undefined
-          }
-        />
-        <NumberField
-          label="現在投資額(時価)"
-          value={account.initialHolding}
-          onChange={(v) => onChange({ ...account, initialHolding: v })}
-          min={0}
-          step={0.1}
-          unit="万円"
-          hint="起点で保有中の評価額"
-        />
-        <NumberField
-          label="取得価額(簿価)"
-          value={account.acquisitionCost ?? account.initialHolding}
-          onChange={(v) =>
-            // 時価と同額なら acquisitionCost を保持せず undefined に戻す(=時価を簿価とみなす簡易化)。
-            onChange({
-              ...account,
-              acquisitionCost: v === account.initialHolding ? undefined : v,
-            })
-          }
-          min={0}
-          step={0.1}
-          unit="万円"
-          hint={
-            account.accountType === 'nisa'
-              ? '未入力は時価と同額。簿価が生涯枠を消費'
-              : '未入力は時価と同額。取崩時の課税に使用'
-          }
-        />
-        <NumberField
-          label="毎月の積立額"
-          value={account.monthlyAmount}
-          onChange={(v) => onChange({ ...account, monthlyAmount: v })}
-          min={0}
-          step={0.1}
-          unit="万円"
-        />
-        <NumberField
-          label="想定利回り"
-          value={account.annualReturn}
-          onChange={(v) => onChange({ ...account, annualReturn: v })}
-          min={0}
-          max={15}
-          step={0.1}
-          unit="%"
-          hint="0〜15%"
-        />
-        <AgeNumberField
-          label="積立開始年齢"
-          value={account.startAge}
-          onChange={(v) => onChange({ ...account, startAge: v })}
-          min={currentAge}
-          max={100}
-          unit="歳"
-        />
-        <AgeNumberField
-          label="積立終了年齢"
-          value={account.endAge}
-          onChange={(v) => onChange({ ...account, endAge: v })}
-          min={currentAge}
-          max={100}
-          unit="歳"
-        />
-      </div>
-
-      <div className="mt-2 rounded-md bg-slate-50 p-2">
-        <div className="flex items-center justify-between">
-          <span className="text-xs font-medium text-slate-600">取り崩し</span>
-          <span className="text-[11px] text-slate-400">老後の投資資産の取り崩し</span>
-        </div>
-
-        {withdrawals.length === 0 && (
-          <p className="mt-1 text-[11px] text-slate-400">取り崩しの設定はありません。</p>
-        )}
-
-        <div className="mt-2 flex flex-col gap-2">
-          {withdrawals.map((withdrawal, i) => (
-            <WithdrawalFields
-              key={i}
-              withdrawal={withdrawal}
-              currentAge={currentAge}
-              planEndAge={planEndAge}
-              familyChildren={familyChildren}
-              valueAtAge={valueAtAge}
-              warning={overlapWarning(withdrawals, i)}
-              onChange={(next) => updateWithdrawal(i, next)}
-              onRemove={() => removeWithdrawal(i)}
+      <div className="mt-2 grid grid-cols-2 gap-2">
+        {contribution.type === 'monthly' ? (
+          <>
+            <AgeNumberField
+              label="開始年齢"
+              value={contribution.startAge}
+              onChange={(v) => onChange({ ...contribution, startAge: v })}
+              min={0}
+              max={100}
+              unit="歳"
             />
-          ))}
-        </div>
-
-        <button
-          type="button"
-          onClick={addWithdrawal}
-          className="mt-2 rounded-md border border-sky-300 px-2 py-1 text-xs font-medium text-sky-600 hover:bg-sky-50"
-        >
-          + 取り崩しを追加
-        </button>
+            <AgeNumberField
+              label="終了年齢"
+              value={contribution.endAge}
+              onChange={(v) => onChange({ ...contribution, endAge: v })}
+              min={0}
+              max={100}
+              unit="歳"
+              hint="この年齢まで毎月積み立てる"
+            />
+            <NumberField
+              label="毎月の積立額"
+              value={contribution.monthlyAmount}
+              onChange={(v) => onChange({ ...contribution, monthlyAmount: v })}
+              min={0}
+              step={0.1}
+              unit="万円"
+            />
+          </>
+        ) : (
+          <>
+            <AgeNumberField
+              label="投資する年齢"
+              value={contribution.age}
+              onChange={(v) => onChange({ ...contribution, age: v })}
+              min={0}
+              max={100}
+              unit="歳"
+            />
+            <NumberField
+              label="投資額"
+              value={contribution.amount}
+              onChange={(v) => onChange({ ...contribution, amount: v })}
+              min={0}
+              step={0.1}
+              unit="万円"
+              hint="その年に一度だけ投資"
+            />
+          </>
+        )}
       </div>
     </div>
   );
