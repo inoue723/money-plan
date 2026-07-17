@@ -619,6 +619,8 @@ export function runSimulation(input: SimulationInput): SimulationResult {
       savings,
       investmentValue,
       investmentContribution: invStep.contribution,
+      investmentWithdrawal: invStep.withdrawal,
+      investmentWithdrawalTax: invStep.tax + mutualAidWithdrawalTax,
       investmentGain: invStep.gain,
       totalAssets,
       events: eventNames,

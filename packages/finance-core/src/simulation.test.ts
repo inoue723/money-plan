@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
+import { CAPITAL_GAINS_TAX_RATE } from './constants';
 import { runSimulation } from './simulation';
 import { calcRetirementTax } from './tax';
 import type {
@@ -1305,5 +1306,127 @@ describe('runSimulation - iDeCo・小規模企業共済(#73)', () => {
     expect(y0.investmentContribution).toBeCloseTo(840, 6);
     // NISA 上限到達の注記も出ない。
     expect(y0.events).not.toContain('NISA上限到達');
+  });
+});
+
+describe('runSimulation - 投資取崩額の年次計上', () => {
+  /** 無収入・無支出で投資枠だけを持つ入力(取崩額と預金の関係だけを見る)。 */
+  const withdrawalOnlyInput = (accounts: InvestmentAccount[]): SimulationInput =>
+    baseInput({
+      basic: { currentAge: 60, endAge: 70, savings: 0 },
+      income: { workPeriods: [], retirementBonus: 0, pension: 0, other: 0 },
+      expense: { items: [] },
+      investment: { accounts },
+    });
+
+  /** 取崩の検証用に、利回り・拠出なしの枠を作る(必要な項目だけ上書き)。 */
+  const account = (overrides: Partial<InvestmentAccount> = {}): InvestmentAccount => ({
+    name: 'x',
+    accountType: 'nisa',
+    owner: 'self',
+    initialHolding: 1000,
+    monthlyAmount: 0,
+    annualReturn: 0,
+    startAge: 60,
+    endAge: 60,
+    withdrawals: [],
+    ...overrides,
+  });
+
+  it('取り崩し設定が無ければ全年 0(取崩額・取崩時課税とも)', () => {
+    const result = runSimulation(withdrawalOnlyInput([account()]));
+    expect(result.every((r) => r.investmentWithdrawal === 0)).toBe(true);
+    expect(result.every((r) => r.investmentWithdrawalTax === 0)).toBe(true);
+  });
+
+  it('NISA の一括取崩は税引前額がそのまま計上され、取崩時課税は 0', () => {
+    const result = runSimulation(
+      withdrawalOnlyInput([
+        account({ accountType: 'nisa', withdrawals: [{ type: 'lumpSum', age: 65, amount: 300 }] }),
+      ]),
+    );
+    const at = result.find((r) => r.age === 65)!;
+    expect(at.investmentWithdrawal).toBeCloseTo(300, 6);
+    // NISA は運用益非課税のため取崩時課税は発生しない。
+    expect(at.investmentWithdrawalTax).toBeCloseTo(0, 6);
+    // 非課税なので取崩額が全額そのまま預金に入る。
+    expect(at.savings).toBeCloseTo(300, 6);
+    // 取崩年以外は 0。
+    expect(result.find((r) => r.age === 64)!.investmentWithdrawal).toBe(0);
+  });
+
+  it('課税口座の一括取崩は含み益ぶんに課税され、取崩時課税に計上される', () => {
+    // 時価 1000・取得価額 400 → 含み益 600(評価益割合 60%)。300 を取り崩す。
+    const result = runSimulation(
+      withdrawalOnlyInput([
+        account({
+          accountType: 'taxable',
+          initialHolding: 1000,
+          acquisitionCost: 400,
+          withdrawals: [{ type: 'lumpSum', age: 65, amount: 300 }],
+        }),
+      ]),
+    );
+    const at = result.find((r) => r.age === 65)!;
+    expect(at.investmentWithdrawal).toBeCloseTo(300, 6);
+    // 課税対象益 = 300 × 60% = 180、税 = 180 × 20.315%。
+    expect(at.investmentWithdrawalTax).toBeCloseTo(300 * 0.6 * CAPITAL_GAINS_TAX_RATE, 6);
+    // 預金に入るのは税引後(取崩額 − 取崩時課税)。
+    expect(at.savings).toBeCloseTo(300 - at.investmentWithdrawalTax, 6);
+  });
+
+  it('iDeCo の一括取崩は退職所得課税額が取崩時課税に計上される', () => {
+    const result = runSimulation(
+      withdrawalOnlyInput([
+        account({
+          accountType: 'ideco',
+          initialHolding: 3000,
+          acquisitionCost: 3000,
+          withdrawals: [{ type: 'lumpSum', age: 65, amount: 3000 }],
+        }),
+      ]),
+    );
+    const at = result.find((r) => r.age === 65)!;
+    // 勤続年数 = 受取65 − 積立開始60 = 5年。
+    const expected = calcRetirementTax({ retirementBonus: 3000, yearsOfService: 5 });
+    expect(at.investmentWithdrawal).toBeCloseTo(3000, 6);
+    expect(at.investmentWithdrawalTax).toBeCloseTo(expected.incomeTax + expected.residentTax, 4);
+  });
+
+  it('全年で 預金残高の増加 = 年間収支 + 取崩額 − 取崩時課税 が成立する', () => {
+    // 収入・支出・課税口座の分割取崩を混在させ、CF表の恒等式が崩れないことを確認する。
+    const result = runSimulation(
+      baseInput({
+        basic: { currentAge: 60, endAge: 90, savings: 200 },
+        income: {
+          workPeriods: [workPeriod({ startAge: 60, endAge: 64 })],
+          retirementBonus: 500,
+          pension: 300,
+          other: 0,
+        },
+        investment: {
+          accounts: [
+            account({
+              accountType: 'taxable',
+              initialHolding: 2000,
+              acquisitionCost: 800,
+              annualReturn: 3.0,
+              withdrawals: [{ type: 'spread', startAge: 66, endAge: 85 }],
+            }),
+          ],
+        },
+      }),
+    );
+
+    result.forEach((r, i) => {
+      const previousSavings = i === 0 ? 200 : result[i - 1]!.savings;
+      expect(r.savings - previousSavings).toBeCloseTo(
+        r.balance + r.investmentWithdrawal - r.investmentWithdrawalTax,
+        6,
+      );
+    });
+    // 取崩が実際に発生している(恒等式が自明に成立しているだけではない)。
+    expect(result.some((r) => r.investmentWithdrawal > 0)).toBe(true);
+    expect(result.some((r) => r.investmentWithdrawalTax > 0)).toBe(true);
   });
 });

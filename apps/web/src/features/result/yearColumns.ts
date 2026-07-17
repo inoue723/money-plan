@@ -153,6 +153,39 @@ function buildExpenseRows(result: YearlyResult[]): CashflowRow[] {
 }
 
 /**
+ * 収支・資産セクションの内訳行を組み立てる。
+ * 投資の取り崩し(#69)は取崩が発生する年がある場合のみ行を出す(住宅ローンと同じく、常時 0 の行を出さない)。
+ */
+function buildBalanceAssetRows(result: YearlyResult[]): CashflowRow[] {
+  const rows: CashflowRow[] = [
+    { label: '年間収支', get: (r) => r.balance },
+    { label: '預金残高', get: (r) => r.savings },
+    { label: '年間積立額', get: (r) => r.investmentContribution },
+  ];
+
+  // 取崩額は税引前、取崩時課税はその内訳。「投資取崩額 − 取崩時課税」が預金に入る額になる。
+  // 課税は取崩とセットでしか発生しないため、2行はまとめて出し入れする(NISA のみなら課税は全年 0)。
+  if (result.some((r) => r.investmentWithdrawal > 0)) {
+    rows.push({ label: '投資取崩額', get: (r) => r.investmentWithdrawal });
+    rows.push({ label: '取崩時課税', get: (r) => r.investmentWithdrawalTax });
+  }
+
+  rows.push(
+    { label: '投資資産', get: (r) => r.investmentValue },
+    { label: '総資産', get: (r) => r.totalAssets, emphasize: true },
+    {
+      // 総資産の前年差分。初年は比較対象がないため「—」(文字列)を返す。
+      label: '総資産 前年比',
+      get: (r, index, all) =>
+        index === 0 ? '—' : r.totalAssets - (all[index - 1]?.totalAssets ?? 0),
+    },
+    { label: 'イベント', get: (r) => r.events.join(' / '), text: true },
+  );
+
+  return rows;
+}
+
+/**
  * CF表の行構成(SPEC.md 2.3.4 の全内訳を縦に展開)。
  * 支出項目(#31)は自由項目のため結果から動的に展開する。それ以外は固定行。
  * `YearlyResult` の既存フィールドをそのまま参照する(結果の再計算はしない)。
@@ -176,20 +209,7 @@ export function buildCashflowSections(result: YearlyResult[]): CashflowSection[]
     },
     {
       heading: '収支・資産',
-      rows: [
-        { label: '年間収支', get: (r) => r.balance },
-        { label: '預金残高', get: (r) => r.savings },
-        { label: '年間積立額', get: (r) => r.investmentContribution },
-        { label: '投資資産', get: (r) => r.investmentValue },
-        { label: '総資産', get: (r) => r.totalAssets, emphasize: true },
-        {
-          // 総資産の前年差分。初年は比較対象がないため「—」(文字列)を返す。
-          label: '総資産 前年比',
-          get: (r, index, all) =>
-            index === 0 ? '—' : r.totalAssets - (all[index - 1]?.totalAssets ?? 0),
-        },
-        { label: 'イベント', get: (r) => r.events.join(' / '), text: true },
-      ],
+      rows: buildBalanceAssetRows(result),
     },
   ];
 }
