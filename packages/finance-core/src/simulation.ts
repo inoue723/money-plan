@@ -27,9 +27,10 @@ import {
   calcRetirementTax,
   calcSalaryTax,
   calcSelfEmployedTax,
+  estimatePension,
   type PersonalDeductionOptions,
 } from './tax';
-import type { DependentCategory } from './constants';
+import { DEFAULT_PENSION_START_AGE, type DependentCategory } from './constants';
 import { initInvestmentState, stepInvestment, type InvestmentState } from './investment';
 import type {
   EducationPlan,
@@ -139,8 +140,16 @@ interface NormalizedChild {
 interface PersonPlan {
   /** 収入情報(本人と配偶者で同一構造)。 */
   income: IncomeInput;
-  /** 全就労期間の終了年齢の最大値。公的年金はこの翌年から受給する。 */
-  lastWorkEndAge: number;
+  /**
+   * 公的年金の受給開始年齢(歳、#18)。この年齢以降に年金を計上する。退職年齢とは独立で、
+   * 未設定なら `DEFAULT_PENSION_START_AGE`(65 歳)。退職〜受給開始の空白期間はここで表現する。
+   */
+  pensionStartAge: number;
+  /**
+   * 当人の公的年金の受給額(年額・万円、#21)。自動推定 ON なら就労履歴からの概算額
+   * (`estimatePension`)、OFF(未設定含む)なら手動入力値(`income.pension`)。
+   */
+  pensionAnnual: number;
   /** 退職金の計上年齢(最後の会社員期間の終了翌年)。会社員期間が無ければ undefined。 */
   retirementBonusAge: number | undefined;
   /**
@@ -151,10 +160,9 @@ interface PersonPlan {
   retirementYearsOfService: number;
 }
 
-/** 収入情報から退職金・年金の基準年齢・勤続年数を求め、`PersonPlan` を構築する。 */
+/** 収入情報から年金の受給開始年齢・受給額・退職金の基準年齢・勤続年数を求め、`PersonPlan` を構築する。 */
 const buildPersonPlan = (income: IncomeInput): PersonPlan => {
   const { workPeriods } = income;
-  const lastWorkEndAge = workPeriods.reduce((max, p) => Math.max(max, p.endAge), -Infinity);
   const employeePeriods = workPeriods.filter((p) => p.workStyle === 'employee');
   const lastEmployeeEndAge = employeePeriods.reduce((max, p) => Math.max(max, p.endAge), -Infinity);
   const retirementBonusAge = Number.isFinite(lastEmployeeEndAge)
@@ -165,7 +173,11 @@ const buildPersonPlan = (income: IncomeInput): PersonPlan => {
     (sum, p) => sum + (p.endAge - p.startAge + 1),
     0,
   );
-  return { income, lastWorkEndAge, retirementBonusAge, retirementYearsOfService };
+  // 受給開始年齢(#18): 未設定なら 65 歳。退職年齢とは独立に扱う。
+  const pensionStartAge = income.pensionStartAge ?? DEFAULT_PENSION_START_AGE;
+  // 受給額(#21): 自動推定 ON なら就労履歴から概算、OFF(未設定は false)なら手動入力値を用いる。
+  const pensionAnnual = income.pensionAutoEstimate ? estimatePension(income) : income.pension;
+  return { income, pensionStartAge, pensionAnnual, retirementBonusAge, retirementYearsOfService };
 };
 
 /**
@@ -218,7 +230,8 @@ const calcPersonYearIncome = (
   deduction: PersonalDeductionOptions,
   mutualAid: MutualAidPersonContext,
 ): PersonYearIncome => {
-  const { income, lastWorkEndAge, retirementBonusAge, retirementYearsOfService } = plan;
+  const { income, pensionStartAge, pensionAnnual, retirementBonusAge, retirementYearsOfService } =
+    plan;
 
   // 小規模企業共済等掛金控除(#73): この名義の iDeCo・小規模企業共済の当年拠出額を全額所得控除する。
   // 該当名義が持つ給与/事業/年金いずれの課税所得計算にも適用する(所得税・住民税とも)。
@@ -243,17 +256,23 @@ const calcPersonYearIncome = (
       salaryNet += r.netSalary;
     } else {
       // 個人事業主: 青色申告特別控除 + 国民健康保険・国民年金(雇用保険なし)。
-      const r = calcSelfEmployedTax({ businessIncome: grossSalary, age, ...deductionWithMutualAid });
+      const r = calcSelfEmployedTax({
+        businessIncome: grossSalary,
+        age,
+        ...deductionWithMutualAid,
+      });
       tax = addTaxBreakdown(tax, r.breakdown);
       salaryNet += r.netIncome;
     }
   }
 
-  // 公的年金は全就労期間の終了翌年から受給する(働き方期間が無い場合は起点から受給)。
+  // 公的年金は受給開始年齢(pensionStartAge。#18)以降に受給する。退職年齢とは独立のため、
+  // 退職〜受給開始の空白期間は年金 0 として資産推移に反映される。受給額(pensionAnnual)は
+  // 手動入力値または就労履歴からの推定額(#21)。
   // 額面(pensionGross)は給与と同じく収入内訳へ、年金分の所得税・住民税は税内訳へ計上する(#79)。
   // 手取り(pensionNet)は手取り収入・年間収支の算出にのみ用いる(収入内訳には出さない)。
-  const receivingPension = age > lastWorkEndAge && income.pension > 0;
-  const basePension = receivingPension ? income.pension : 0;
+  const receivingPension = age >= pensionStartAge && pensionAnnual > 0;
+  const basePension = receivingPension ? pensionAnnual : 0;
   let pensionGross = 0;
   let pensionNet = 0;
   let basePensionIncomeTax = 0;
@@ -569,7 +588,10 @@ export function runSimulation(input: SimulationInput): SimulationResult {
       selfYear.pensionWithdrawalTax + (spouseYear ? spouseYear.pensionWithdrawalTax : 0);
     let lumpSumWithdrawalTax = 0;
     for (const ls of invStep.mutualAidLumpSums) {
-      const r = calcRetirementTax({ retirementBonus: ls.amount, yearsOfService: ls.yearsOfService });
+      const r = calcRetirementTax({
+        retirementBonus: ls.amount,
+        yearsOfService: ls.yearsOfService,
+      });
       lumpSumWithdrawalTax += r.incomeTax + r.residentTax;
     }
     // iDeCo・小規模企業共済の受取に伴う税の合計(投資 CF 側で取崩額から差し引く)。

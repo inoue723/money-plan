@@ -6,11 +6,17 @@
  * 退職金 / 年金受給額 / その他収入 も本人・配偶者で同じ UI・同じ計算方式を使う(#49)。
  * 配偶者の年齢は F-01(基本情報)で入力し、収入は本セクションで本人と同じ UI で入力する。
  */
-import type { IncomeInput, WorkPeriod, WorkStyle } from '@money-plan/finance-core';
+import {
+  estimatePension,
+  type IncomeInput,
+  type WorkPeriod,
+  type WorkStyle,
+} from '@money-plan/finance-core';
 import { useSimulationStore } from '../../stores/simulationStore';
 import { NumberField } from '../../components/NumberField';
 import { AgeNumberField } from '../../components/AgeNumberField';
 import { SelectField } from '../../components/SelectField';
+import { ToggleField } from '../../components/ToggleField';
 
 const WORK_STYLE_OPTIONS: { value: WorkStyle; label: string }[] = [
   { value: 'employee', label: '会社員' },
@@ -78,6 +84,10 @@ function IncomeFields({ income, baseAge, onChange }: IncomeFieldsProps) {
   };
 
   const warnings = validatePeriods(periods);
+
+  // 年金額の自動計算(#21)。未設定は手動扱い(false)。ON のときは就労履歴からの推定額を表示する。
+  const autoEstimate = income.pensionAutoEstimate ?? false;
+  const estimatedPension = Math.round(estimatePension(income));
 
   return (
     <div className="flex flex-col gap-3">
@@ -180,15 +190,46 @@ function IncomeFields({ income, baseAge, onChange }: IncomeFieldsProps) {
           unit="万円"
           hint="最後の会社員期間の終了翌年に計上"
         />
-        <NumberField
-          label="年金受給額(年額)"
-          value={income.pension}
-          onChange={(v) => onChange({ pension: v })}
-          min={0}
-          unit="万円"
-          hint="就労終了の翌年から受給"
+        <AgeNumberField
+          label="年金受給開始年齢"
+          value={income.pensionStartAge ?? 65}
+          onChange={(v) => onChange({ pensionStartAge: v })}
+          min={55}
+          max={75}
+          unit="歳"
+          hint="退職年齢とは独立(既定65歳)"
         />
       </div>
+
+      {/* 年金受給額(#21): 自動計算 ON なら就労履歴から推定した目安値を表示、OFF なら手動入力。 */}
+      <div className="flex flex-col gap-2 rounded-md border border-slate-200 p-2">
+        <ToggleField
+          label="年金額を自動計算"
+          checked={autoEstimate}
+          onChange={(checked) => onChange({ pensionAutoEstimate: checked })}
+          hint="就労履歴(年収・加入年数)から公的年金の目安額を推定します"
+        />
+        {autoEstimate ? (
+          <NumberField
+            label="年金受給額(年額・推定)"
+            value={estimatedPension}
+            onChange={() => {}}
+            unit="万円"
+            disabled
+            hint="老齢基礎年金 + 老齢厚生年金の概算。手動入力するにはトグルをオフに"
+          />
+        ) : (
+          <NumberField
+            label="年金受給額(年額)"
+            value={income.pension}
+            onChange={(v) => onChange({ pension: v })}
+            min={0}
+            unit="万円"
+            hint="受給開始年齢から受給"
+          />
+        )}
+      </div>
+
       <NumberField
         label="その他の収入(年額)"
         value={income.other}

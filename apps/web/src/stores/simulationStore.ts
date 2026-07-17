@@ -32,7 +32,9 @@
  *    投資枠に名義 `owner` を追加して既存枠はすべて `'self'`(本人)とする(#52)、
  *    v5 → v6: 投資枠の取り崩しを単一の年額指定 `withdrawal` から複数設定 `withdrawals` へ再設計(#69)、
  *    v6 → v7: 投資枠の積立を単一の月額 + 積立開始/終了年齢から複数の積立設定 `contributions`
- *    (年齢別の月額積立 + 一括投資)へ再設計)。
+ *    (年齢別の月額積立 + 一括投資)へ再設計、
+ *    v7 → v8: 収入情報に年金の受給開始年齢 `pensionStartAge`(#18)と自動推定フラグ
+ *    `pensionAutoEstimate`(#21)を追加)。
  */
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
@@ -87,7 +89,9 @@ export const DEFAULT_INPUT: SimulationInput = {
       },
     ],
     retirementBonus: 0,
-    pension: 150, // 年金受給額(年額・万円)の概算目安値
+    pension: 150, // 年金受給額(年額・万円)。自動計算 OFF 時の手動入力の初期値
+    pensionStartAge: 65, // 受給開始年齢(#18)。退職年齢とは独立(デフォルト 65 歳)
+    pensionAutoEstimate: true, // 就労履歴から受給額を自動推定(#21)。新規プランはデフォルト ON
     other: 0,
   },
   expense: {
@@ -146,6 +150,8 @@ export const createEmptyIncome = (): IncomeInput => ({
   workPeriods: [],
   retirementBonus: 0,
   pension: 0,
+  pensionStartAge: 65, // 受給開始年齢(#18)。デフォルト 65 歳
+  pensionAutoEstimate: true, // 就労履歴から自動推定(#21)。就労なしなら推定額 0
   other: 0,
 });
 
@@ -191,7 +197,7 @@ export interface ImportedPlan {
  * 永続化スキーマのバージョン。`tabs` や入力形状(`SimulationInput`)の構造を
  * 破壊的に変更したら増やし、`persist` の `migrate` で旧データを変換する。
  */
-export const PERSIST_VERSION = 7;
+export const PERSIST_VERSION = 8;
 
 /** localStorage のキー(SPEC.md 4.1: ローカルのみに保存)。 */
 export const PERSIST_KEY = 'money-plan/simulation';
@@ -377,6 +383,37 @@ const migrateContributions = (input: SimulationInput): SimulationInput => ({
 });
 
 /**
+ * v7 → v8 の入力マイグレーション(#18 / #21)。収入情報(本人・配偶者)に
+ * 年金の受給開始年齢(`pensionStartAge`)と自動推定フラグ(`pensionAutoEstimate`)を追加する。
+ *
+ * - `pensionStartAge`: 未設定なら 65 歳(#18。SPEC.md 2.2 のデフォルト)。旧データは退職翌年から
+ *   受給していたが、移行後は 65 歳受給開始が既定になる(退職〜受給開始の空白期間を表現できる)。
+ * - `pensionAutoEstimate`: 既存プランは **false(手動)** とし、これまで入力していた `pension`
+ *   (年金受給額)の値をそのまま維持する(自動推定への切替はユーザーの明示操作に委ねる)。
+ *
+ * 既に値を持つ収入はそのまま維持する(冪等)。
+ */
+const migratePensionFields = (input: SimulationInput): SimulationInput => {
+  const withDefaults = (inc: IncomeInput): IncomeInput => ({
+    ...inc,
+    pensionStartAge: typeof inc.pensionStartAge === 'number' ? inc.pensionStartAge : 65,
+    // 既存プランは手動入力値を保持する(自動推定は OFF)。
+    pensionAutoEstimate:
+      typeof inc.pensionAutoEstimate === 'boolean' ? inc.pensionAutoEstimate : false,
+  });
+  return {
+    ...input,
+    income: withDefaults(input.income),
+    family: input.family.spouse
+      ? {
+          ...input.family,
+          spouse: { ...input.family.spouse, income: withDefaults(input.family.spouse.income) },
+        }
+      : input.family,
+  };
+};
+
+/**
  * プラン単位の入力マイグレーション(#71 JSON import 用)。
  * export ファイルに書かれた `version` を起点に、現在の `PERSIST_VERSION` まで、
  * 上記の入力マイグレーションを順に適用してプラン 1 件の `input` を現行形状へ揃える。
@@ -392,6 +429,7 @@ export const migratePlanInput = (input: SimulationInput, fromVersion: number): S
   if (fromVersion < 4) result = migrateInputV3toV4(result);
   if (fromVersion < 6) result = migrateWithdrawals(result);
   if (fromVersion < 7) result = migrateContributions(result);
+  if (fromVersion < 8) result = migratePensionFields(result);
   return result;
 };
 
@@ -728,6 +766,20 @@ export const useSimulationStore = create<SimulationState>()(
               ...t,
               savedInput: migrateContributions(t.savedInput),
               draftInput: migrateContributions(t.draftInput),
+            })),
+          };
+        }
+
+        if (version < 8) {
+          // v7 → v8: 収入情報に年金の受給開始年齢(#18)と自動推定フラグ(#21)を追加する。
+          // 既存プランは受給開始年齢を 65 歳・自動推定 OFF(手動値を維持)にする。
+          data = {
+            ...data,
+            input: migratePensionFields(data.input),
+            tabs: data.tabs.map((t) => ({
+              ...t,
+              savedInput: migratePensionFields(t.savedInput),
+              draftInput: migratePensionFields(t.draftInput),
             })),
           };
         }

@@ -28,6 +28,7 @@ import {
   NATIONAL_HEALTH_INSURANCE,
   NATIONAL_PENSION,
   PENSION_DEDUCTION,
+  PENSION_ESTIMATE,
   RECONSTRUCTION_SURTAX_RATE,
   RESIDENT_TAX,
   RETIREMENT_INCOME_DEDUCTION,
@@ -38,7 +39,7 @@ import {
   type DependentCategory,
   type NhiCategoryRate,
 } from './constants';
-import type { TaxBreakdown } from './types';
+import type { IncomeInput, TaxBreakdown } from './types';
 
 // ---------------------------------------------------------------------------
 // 単位換算・端数処理ユーティリティ
@@ -517,6 +518,58 @@ export function calcPensionTax(input: PensionTaxInput): PensionTaxResult {
     residentTax: toManyen(residentTaxYen),
     netPension: toManyen(netYen),
   };
+}
+
+// ---------------------------------------------------------------------------
+// 公的年金受給額の推定(就労履歴からの概算。#21)
+// ---------------------------------------------------------------------------
+
+/** 年率(%)を年数 n 分だけ複利で成長させる係数(推定用の平均年収の算定に使う)。 */
+const growthFactor = (ratePercent: number, years: number): number =>
+  Math.pow(1 + ratePercent / 100, years);
+
+/**
+ * 就労履歴(働き方期間)から公的年金の受給額(年額・万円)を概算する(#21)。
+ *
+ * 老齢基礎年金 + 老齢厚生年金の簡易モデル:
+ * - **老齢基礎年金**: 全就労期間(会社員・個人事業主とも)のうち加入対象年齢
+ *   (20歳以上60歳未満)に重なる年数を合算(40年で頭打ち)し、満額 × 加入年数 / 40 で概算する。
+ * - **老齢厚生年金(報酬比例)**: 会社員期間ごとに 平均年収 × 乗率 × 加入年数 を合算する。
+ *   平均年収は期間の開始年収を昇給率で期間の中央年まで成長させた値とする。個人事業主期間は
+ *   厚生年金に加入しないため対象外。
+ *
+ * 期間は重複しない前提(UI でバリデーション)。実際の年金額とは異なる概算である(SPEC.md 1.4)。
+ *
+ * @param income 収入情報(働き方期間を参照する)。
+ * @returns 推定した公的年金の年額(万円)。就労期間が無ければ 0。
+ */
+export function estimatePension(income: IncomeInput): number {
+  const { basicFullAnnual, basicFullYears, basicCoverageAge, employeeAccrualRate } =
+    PENSION_ESTIMATE;
+
+  // 老齢基礎年金: 加入対象年齢(20〜59歳)に重なる就労年数を合算し、40年で満額に達する比例配分。
+  let coverageYears = 0;
+  for (const p of income.workPeriods) {
+    // 就労期間 [startAge, endAge](両端含む)と加入対象 [from, to)(to は含まない)の重なり年数。
+    const lower = Math.max(p.startAge, basicCoverageAge.from);
+    const upper = Math.min(p.endAge + 1, basicCoverageAge.to);
+    coverageYears += Math.max(0, upper - lower);
+  }
+  const cappedCoverage = Math.min(coverageYears, basicFullYears);
+  const basicYen = basicFullAnnual * (cappedCoverage / basicFullYears);
+
+  // 老齢厚生年金(報酬比例部分): 会社員期間ごとに 平均年収 × 乗率 × 加入年数 を合算する。
+  let employeeYen = 0;
+  for (const p of income.workPeriods) {
+    if (p.workStyle !== 'employee') continue;
+    const years = p.endAge - p.startAge + 1; // 両端を含む加入年数
+    if (years <= 0) continue;
+    // 平均年収 = 開始年収 × 昇給率の期間中央(=(years−1)/2 年後)までの成長係数。
+    const avgIncomeYen = toYen(p.income * growthFactor(p.raiseRate, (years - 1) / 2));
+    employeeYen += avgIncomeYen * employeeAccrualRate * years;
+  }
+
+  return toManyen(basicYen + employeeYen);
 }
 
 // ---------------------------------------------------------------------------

@@ -436,10 +436,11 @@ describe('runSimulation', () => {
     expect(result.some((y) => y.events.includes('退職金'))).toBe(false);
   });
 
-  it('年金は全就労期間の終了翌年から受給する(個人事業主のみでも同様)', () => {
+  it('年金は受給開始年齢の既定(65歳)から受給する(個人事業主のみでも同様。#18)', () => {
     const result = runSimulation(
       baseInput({
         income: {
+          // pensionStartAge 未設定 → 既定 65 歳。
           workPeriods: [workPeriod({ startAge: 30, endAge: 64, workStyle: 'selfEmployed' })],
           retirementBonus: 0,
           pension: 150,
@@ -449,6 +450,54 @@ describe('runSimulation', () => {
     );
     expect(result.find((y) => y.age === 64)!.income.pension).toBe(0);
     expect(result.find((y) => y.age === 65)!.income.pension).toBeGreaterThan(0);
+  });
+
+  it('退職後〜受給開始の空白期間は年金・給与ともに0になる(#18)', () => {
+    const result = runSimulation(
+      baseInput({
+        basic: { currentAge: 55, endAge: 90, savings: 2000 },
+        income: {
+          // 60歳で退職、年金は70歳から受給(繰下げ相当の空白期間)。
+          workPeriods: [workPeriod({ startAge: 55, endAge: 60, income: 600, raiseRate: 0 })],
+          retirementBonus: 0,
+          pension: 200,
+          pensionStartAge: 70,
+          other: 0,
+        },
+      }),
+    );
+    // 就労中(60歳)は給与あり・年金なし。
+    const working = result.find((y) => y.age === 60)!;
+    expect(working.income.grossSalary).toBeGreaterThan(0);
+    expect(working.income.pension).toBe(0);
+    // 空白期間(61〜69歳)は給与も年金も0。
+    for (let age = 61; age <= 69; age++) {
+      const y = result.find((r) => r.age === age)!;
+      expect(y.income.grossSalary).toBe(0);
+      expect(y.income.pension).toBe(0);
+    }
+    // 受給開始年齢(70歳)から年金を受給する。
+    expect(result.find((y) => y.age === 70)!.income.pension).toBeCloseTo(200, 6);
+  });
+
+  it('年金額を自動計算(pensionAutoEstimate)すると手動値を無視し就労履歴から推定する(#21)', () => {
+    const manual = 1; // 手動値はごく小さくしておく
+    const withAuto = runSimulation(
+      baseInput({
+        basic: { currentAge: 30, endAge: 90, savings: 500 },
+        income: {
+          workPeriods: [workPeriod({ startAge: 30, endAge: 64, income: 500, raiseRate: 1.0 })],
+          retirementBonus: 0,
+          pension: manual,
+          pensionAutoEstimate: true,
+          other: 0,
+        },
+      }),
+    );
+    const at70 = withAuto.find((y) => y.age === 70)!;
+    // 手動値(1万円)ではなく、就労履歴からの推定額(基礎+厚生で数百万規模)が計上される。
+    expect(at70.income.pension).toBeGreaterThan(manual);
+    expect(at70.income.pension).toBeGreaterThan(100);
   });
 
   it('積立投資で投資資産が増え、運用益が計上される', () => {
@@ -850,7 +899,7 @@ describe('runSimulation - 配偶者の収入(#49)', () => {
     expect(totalTax(withoutDeduction)).toBeGreaterThan(totalTax(withDeduction));
   });
 
-  it('配偶者の年金が配偶者の就労終了翌年から受給される', () => {
+  it('配偶者の年金が配偶者の受給開始年齢(pensionStartAge)から受給される(#18)', () => {
     const result = runSimulation(
       baseInput({
         basic: { currentAge: 30, endAge: 90, savings: 500 },
@@ -863,17 +912,17 @@ describe('runSimulation - 配偶者の収入(#49)', () => {
               workPeriods: [workPeriod({ startAge: 30, endAge: 60, income: 400, raiseRate: 0 })],
               retirementBonus: 0,
               pension: 200,
+              pensionStartAge: 63, // 退職(60歳)とは独立に 63 歳から受給
               other: 0,
             },
           },
         },
       }),
     );
-    // 配偶者は60歳まで就労→61歳から年金。60歳時点では年金0、61歳で年金>0。
-    const at60 = result.find((r) => r.age === 60)!;
-    const at61 = result.find((r) => r.age === 61)!;
-    expect(at60.income.pension).toBe(0);
-    expect(at61.income.pension).toBeGreaterThan(0);
+    // 配偶者は60歳まで就労→退職〜受給開始(63歳)の空白期間は年金0、63歳で受給開始。
+    expect(result.find((r) => r.age === 60)!.income.pension).toBe(0);
+    expect(result.find((r) => r.age === 62)!.income.pension).toBe(0); // 空白期間
+    expect(result.find((r) => r.age === 63)!.income.pension).toBeGreaterThan(0);
   });
 });
 
