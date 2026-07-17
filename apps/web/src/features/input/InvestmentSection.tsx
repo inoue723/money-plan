@@ -12,7 +12,7 @@
  * NISA 枠には制度上の投資上限(生涯 1800 万・年間 360 万)が名義ごとに適用され、上限超過分は
  * 積み立てられず預金に残る(計算は finance-core 側)。取り崩し(#69)も枠ごとに複数設定できる。
  */
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import type {
   AccountOwner,
   AccountType,
@@ -464,16 +464,49 @@ function AccountFields({
   };
 
   const warnings = contributionWarnings(contributions);
+  // 投資枠ごとに畳み込み(開閉)できるようにする。既定は開いた状態。
+  const [open, setOpen] = useState(true);
 
   return (
     <div className="rounded-md border border-slate-200 p-2">
       <div className="mb-2 flex items-center justify-between gap-2">
-        <div>
-          <p className="text-sm font-semibold text-slate-800">{accountLabel(account)}</p>
-          {ACCOUNT_TYPE_HINT[account.accountType] && (
-            <p className="text-[11px] text-slate-400">{ACCOUNT_TYPE_HINT[account.accountType]}</p>
-          )}
-        </div>
+        {/* 枠ヘッダー全体を開閉トグルにする(削除ボタンはネスト不可のため別ボタンとして分離)。 */}
+        <button
+          type="button"
+          aria-expanded={open}
+          onClick={() => setOpen((v) => !v)}
+          className="flex flex-1 items-center gap-2 text-left"
+        >
+          <svg
+            className={`h-4 w-4 shrink-0 text-slate-400 transition-transform ${open ? 'rotate-180' : ''}`}
+            viewBox="0 0 20 20"
+            fill="currentColor"
+            aria-hidden="true"
+          >
+            <path
+              fillRule="evenodd"
+              d="M5.23 7.21a.75.75 0 011.06.02L10 11.17l3.71-3.94a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z"
+              clipRule="evenodd"
+            />
+          </svg>
+          <span className="min-w-0">
+            <span className="block text-sm font-semibold text-slate-800">
+              {accountLabel(account)}
+            </span>
+            {/* 畳んでいるときは中身が見えないため、積立・取り崩しの件数を要約表示する。 */}
+            {open ? (
+              ACCOUNT_TYPE_HINT[account.accountType] && (
+                <span className="block text-[11px] text-slate-400">
+                  {ACCOUNT_TYPE_HINT[account.accountType]}
+                </span>
+              )
+            ) : (
+              <span className="block text-[11px] text-slate-400">
+                積立 {contributions.length} 件 ・ 取り崩し {withdrawals.length} 件
+              </span>
+            )}
+          </span>
+        </button>
         <button
           type="button"
           onClick={onRemove}
@@ -483,118 +516,122 @@ function AccountFields({
         </button>
       </div>
 
-      <div className="grid grid-cols-2 gap-2">
-        <NumberField
-          label="現在投資額(時価)"
-          value={account.initialHolding}
-          onChange={(v) => onChange({ ...account, initialHolding: v })}
-          min={0}
-          step={0.1}
-          unit="万円"
-          hint="起点で保有中の評価額"
-        />
-        <NumberField
-          label="取得価額(簿価)"
-          value={account.acquisitionCost ?? account.initialHolding}
-          onChange={(v) =>
-            // 時価と同額なら acquisitionCost を保持せず undefined に戻す(=時価を簿価とみなす簡易化)。
-            onChange({
-              ...account,
-              acquisitionCost: v === account.initialHolding ? undefined : v,
-            })
-          }
-          min={0}
-          step={0.1}
-          unit="万円"
-          hint={
-            account.accountType === 'nisa'
-              ? '未入力は時価と同額。簿価が生涯枠を消費'
-              : '未入力は時価と同額。取崩時の課税に使用'
-          }
-        />
-        <NumberField
-          label="想定利回り"
-          value={account.annualReturn}
-          onChange={(v) => onChange({ ...account, annualReturn: v })}
-          min={0}
-          max={15}
-          step={0.1}
-          unit="%"
-          hint="0〜15%"
-        />
-      </div>
-
-      {/* 積立設定: 月額積立(年齢期間で毎月)と一括投資(指定年齢に一度)を複数登録できる。 */}
-      <div className="mt-2 rounded-md bg-slate-50 p-2">
-        <div className="flex items-center justify-between">
-          <span className="text-xs font-medium text-slate-600">積立</span>
-          <span className="text-[11px] text-slate-400">年齢別の月額・一括投資</span>
-        </div>
-
-        {contributions.length === 0 && (
-          <p className="mt-1 text-[11px] text-slate-400">積立の設定はありません。</p>
-        )}
-
-        <div className="mt-2 flex flex-col gap-2">
-          {contributions.map((contribution, i) => (
-            <ContributionFields
-              key={i}
-              contribution={contribution}
-              onChange={(next) => updateContribution(i, next)}
-              onRemove={() => removeContribution(i)}
+      {!open ? null : (
+        <>
+          <div className="grid grid-cols-2 gap-2">
+            <NumberField
+              label="現在投資額(時価)"
+              value={account.initialHolding}
+              onChange={(v) => onChange({ ...account, initialHolding: v })}
+              min={0}
+              step={0.1}
+              unit="万円"
+              hint="起点で保有中の評価額"
             />
-          ))}
-        </div>
-
-        {warnings.map((w) => (
-          <p key={w} className="mt-1 text-[11px] font-medium text-rose-500">
-            {w}
-          </p>
-        ))}
-
-        <button
-          type="button"
-          onClick={addContribution}
-          className="mt-2 rounded-md border border-sky-300 px-2 py-1 text-xs font-medium text-sky-600 hover:bg-sky-50"
-        >
-          + 積立を追加
-        </button>
-      </div>
-
-      <div className="mt-2 rounded-md bg-slate-50 p-2">
-        <div className="flex items-center justify-between">
-          <span className="text-xs font-medium text-slate-600">取り崩し</span>
-          <span className="text-[11px] text-slate-400">老後の投資資産の取り崩し</span>
-        </div>
-
-        {withdrawals.length === 0 && (
-          <p className="mt-1 text-[11px] text-slate-400">取り崩しの設定はありません。</p>
-        )}
-
-        <div className="mt-2 flex flex-col gap-2">
-          {withdrawals.map((withdrawal, i) => (
-            <WithdrawalFields
-              key={i}
-              withdrawal={withdrawal}
-              currentAge={currentAge}
-              planEndAge={planEndAge}
-              familyChildren={familyChildren}
-              valueAtAge={valueAtAge}
-              warning={overlapWarning(withdrawals, i)}
-              onChange={(next) => updateWithdrawal(i, next)}
-              onRemove={() => removeWithdrawal(i)}
+            <NumberField
+              label="取得価額(簿価)"
+              value={account.acquisitionCost ?? account.initialHolding}
+              onChange={(v) =>
+                // 時価と同額なら acquisitionCost を保持せず undefined に戻す(=時価を簿価とみなす簡易化)。
+                onChange({
+                  ...account,
+                  acquisitionCost: v === account.initialHolding ? undefined : v,
+                })
+              }
+              min={0}
+              step={0.1}
+              unit="万円"
+              hint={
+                account.accountType === 'nisa'
+                  ? '未入力は時価と同額。簿価が生涯枠を消費'
+                  : '未入力は時価と同額。取崩時の課税に使用'
+              }
             />
-          ))}
-        </div>
+            <NumberField
+              label="想定利回り"
+              value={account.annualReturn}
+              onChange={(v) => onChange({ ...account, annualReturn: v })}
+              min={0}
+              max={15}
+              step={0.1}
+              unit="%"
+              hint="0〜15%"
+            />
+          </div>
 
-        <button
-          type="button"
-          onClick={addWithdrawal}
-          className="mt-2 rounded-md border border-sky-300 px-2 py-1 text-xs font-medium text-sky-600 hover:bg-sky-50"
-        >
-          + 取り崩しを追加
-        </button>
-      </div>
+          {/* 積立設定: 月額積立(年齢期間で毎月)と一括投資(指定年齢に一度)を複数登録できる。 */}
+          <div className="mt-2 rounded-md bg-slate-50 p-2">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-medium text-slate-600">積立</span>
+              <span className="text-[11px] text-slate-400">年齢別の月額・一括投資</span>
+            </div>
+
+            {contributions.length === 0 && (
+              <p className="mt-1 text-[11px] text-slate-400">積立の設定はありません。</p>
+            )}
+
+            <div className="mt-2 flex flex-col gap-2">
+              {contributions.map((contribution, i) => (
+                <ContributionFields
+                  key={i}
+                  contribution={contribution}
+                  onChange={(next) => updateContribution(i, next)}
+                  onRemove={() => removeContribution(i)}
+                />
+              ))}
+            </div>
+
+            {warnings.map((w) => (
+              <p key={w} className="mt-1 text-[11px] font-medium text-rose-500">
+                {w}
+              </p>
+            ))}
+
+            <button
+              type="button"
+              onClick={addContribution}
+              className="mt-2 rounded-md border border-sky-300 px-2 py-1 text-xs font-medium text-sky-600 hover:bg-sky-50"
+            >
+              + 積立を追加
+            </button>
+          </div>
+
+          <div className="mt-2 rounded-md bg-slate-50 p-2">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-medium text-slate-600">取り崩し</span>
+              <span className="text-[11px] text-slate-400">老後の投資資産の取り崩し</span>
+            </div>
+
+            {withdrawals.length === 0 && (
+              <p className="mt-1 text-[11px] text-slate-400">取り崩しの設定はありません。</p>
+            )}
+
+            <div className="mt-2 flex flex-col gap-2">
+              {withdrawals.map((withdrawal, i) => (
+                <WithdrawalFields
+                  key={i}
+                  withdrawal={withdrawal}
+                  currentAge={currentAge}
+                  planEndAge={planEndAge}
+                  familyChildren={familyChildren}
+                  valueAtAge={valueAtAge}
+                  warning={overlapWarning(withdrawals, i)}
+                  onChange={(next) => updateWithdrawal(i, next)}
+                  onRemove={() => removeWithdrawal(i)}
+                />
+              ))}
+            </div>
+
+            <button
+              type="button"
+              onClick={addWithdrawal}
+              className="mt-2 rounded-md border border-sky-300 px-2 py-1 text-xs font-medium text-sky-600 hover:bg-sky-50"
+            >
+              + 取り崩しを追加
+            </button>
+          </div>
+        </>
+      )}
     </div>
   );
 }
