@@ -313,12 +313,21 @@ function taxableIncomeNode(label: string, taxableYen: number, terms: FormulaPart
 }
 
 /**
- * `calcIncomeTax` の計算根拠つき版。課税標準の項として `taxableNode` を式に埋め込む
- * (給与・事業・年金・退職所得の各所得税で共用する)。
+ * 課税所得ノード(万円)の値を課税標準(円・1,000円未満切捨て・0未満は0)に戻す。
+ * 円→万円の変換で生じ得る浮動小数の微小誤差が切捨ての境界をまたいで税額を変えないよう、
+ * 微小量を加えてから丸める。
  */
-export function calcIncomeTaxDetailed(taxableIncomeYen: number, taxableNode: CalcNode): CalcNode {
-  const taxable = Math.max(0, roundDownTo1000(taxableIncomeYen));
-  const incomeTaxYen = calcIncomeTax(taxableIncomeYen);
+const taxableYenFromNode = (taxableNode: CalcNode): number =>
+  Math.max(0, roundDownTo1000(toYen(taxableNode.value) + 1e-6));
+
+/**
+ * `calcIncomeTax` の計算根拠つき版。課税標準を `taxableNode` の値から取り、税額も同じ値から
+ * 算出する(式に表示する項と実際の計算値の乖離を構造的に防ぐ)。
+ * 給与・事業・年金・退職所得の各所得税で共用する。
+ */
+export function calcIncomeTaxDetailed(taxableNode: CalcNode): CalcNode {
+  const taxable = taxableYenFromNode(taxableNode);
+  const incomeTaxYen = calcIncomeTax(taxable);
   if (taxable === 0) {
     return fromYen('所得税', incomeTaxYen, {
       formula: [`${taxableNode.label}が0円のため非課税`],
@@ -399,21 +408,6 @@ export function calcSalaryTaxDetailed(input: SalaryTaxInput): SalaryTaxDetailedR
   const incomeTaxable = salaryIncome - social.total - deductions.incomeTax;
   const residentTaxable = salaryIncome - social.total - deductions.residentTax;
 
-  const incomeTaxYen = calcIncomeTax(incomeTaxable);
-  const residentTaxYen = calcResidentTax(residentTaxable);
-
-  const netYen = grossYen - incomeTaxYen - residentTaxYen - social.total;
-
-  const breakdown: TaxBreakdown = {
-    incomeTax: toManyen(incomeTaxYen),
-    residentTax: toManyen(residentTaxYen),
-    healthInsurance: toManyen(social.health),
-    pensionInsurance: toManyen(social.pension),
-    employmentInsurance: toManyen(social.employment),
-    socialInsurance: toManyen(social.total),
-  };
-  const result: SalaryTaxResult = { breakdown, netSalary: toManyen(netYen) };
-
   // --- 計算根拠ツリー(所得税): 課税所得(給与) = 給与所得 − 社会保険料控除 − 人的控除 ---
   const salaryIncomeNode = fromYen('給与所得', salaryIncome, {
     formula: [
@@ -435,8 +429,22 @@ export function calcSalaryTaxDetailed(input: SalaryTaxInput): SalaryTaxDetailedR
     { op: '−', node: socialNode },
     ...personalDeductionNodes(input, 'incomeTax').map((node) => ({ op: '−', node })),
   ]);
+  const incomeTaxNode = calcIncomeTaxDetailed(taxableNode);
 
-  return { result, explain: { incomeTax: calcIncomeTaxDetailed(incomeTaxable, taxableNode) } };
+  // 所得税と手取りはノードの値から導出する(式と実際の計算値を単一の計算源に揃える)。
+  const residentTaxYen = calcResidentTax(residentTaxable);
+  const breakdown: TaxBreakdown = {
+    incomeTax: incomeTaxNode.value,
+    residentTax: toManyen(residentTaxYen),
+    healthInsurance: toManyen(social.health),
+    pensionInsurance: toManyen(social.pension),
+    employmentInsurance: toManyen(social.employment),
+    socialInsurance: toManyen(social.total),
+  };
+  const netSalary =
+    toManyen(grossYen) - incomeTaxNode.value - toManyen(residentTaxYen) - toManyen(social.total);
+
+  return { result: { breakdown, netSalary }, explain: { incomeTax: incomeTaxNode } };
 }
 
 /**
@@ -559,21 +567,6 @@ export function calcSelfEmployedTaxDetailed(
   const incomeTaxable = businessIncome - social.total - deductions.incomeTax;
   const residentTaxable = businessIncome - social.total - deductions.residentTax;
 
-  const incomeTaxYen = calcIncomeTax(incomeTaxable);
-  const residentTaxYen = calcResidentTax(residentTaxable);
-
-  const netYen = grossYen - incomeTaxYen - residentTaxYen - social.total;
-
-  const breakdown: TaxBreakdown = {
-    incomeTax: toManyen(incomeTaxYen),
-    residentTax: toManyen(residentTaxYen),
-    healthInsurance: toManyen(social.health),
-    pensionInsurance: toManyen(social.pension),
-    employmentInsurance: 0,
-    socialInsurance: toManyen(social.total),
-  };
-  const result: SelfEmployedTaxResult = { breakdown, netIncome: toManyen(netYen) };
-
   // --- 計算根拠ツリー(所得税): 課税所得(事業) = 控除後所得 − 社会保険料控除 − 人的控除 ---
   const businessIncomeNode = fromYen('青色申告特別控除後の所得', businessIncome, {
     formula: [
@@ -600,8 +593,22 @@ export function calcSelfEmployedTaxDetailed(
     { op: '−', node: socialNode },
     ...personalDeductionNodes(input, 'incomeTax').map((node) => ({ op: '−', node })),
   ]);
+  const incomeTaxNode = calcIncomeTaxDetailed(taxableNode);
 
-  return { result, explain: { incomeTax: calcIncomeTaxDetailed(incomeTaxable, taxableNode) } };
+  // 所得税と手取りはノードの値から導出する(式と実際の計算値を単一の計算源に揃える)。
+  const residentTaxYen = calcResidentTax(residentTaxable);
+  const breakdown: TaxBreakdown = {
+    incomeTax: incomeTaxNode.value,
+    residentTax: toManyen(residentTaxYen),
+    healthInsurance: toManyen(social.health),
+    pensionInsurance: toManyen(social.pension),
+    employmentInsurance: 0,
+    socialInsurance: toManyen(social.total),
+  };
+  const netIncome =
+    toManyen(grossYen) - incomeTaxNode.value - toManyen(residentTaxYen) - toManyen(social.total);
+
+  return { result: { breakdown, netIncome }, explain: { incomeTax: incomeTaxNode } };
 }
 
 // ---------------------------------------------------------------------------
@@ -707,27 +714,21 @@ export function calcPensionTaxDetailed(input: PensionTaxInput): PensionTaxDetail
   const taxableIncome = calcPensionTaxableIncome(pensionYen, input.age);
   const deductions = calcPersonalDeductions(input);
 
-  const incomeTaxYen = calcIncomeTax(taxableIncome - deductions.incomeTax);
-  const residentTaxYen = calcResidentTax(taxableIncome - deductions.residentTax);
-  const netYen = pensionYen - incomeTaxYen - residentTaxYen;
-
-  const result: PensionTaxResult = {
-    incomeTax: toManyen(incomeTaxYen),
-    residentTax: toManyen(residentTaxYen),
-    netPension: toManyen(netYen),
-  };
-
   // --- 計算根拠ツリー(所得税): 課税所得(年金) = 雑所得(収入 − 公的年金等控除) − 人的控除 ---
   const table = input.age >= 65 ? PENSION_DEDUCTION.from65 : PENSION_DEDUCTION.under65;
   const bracket = findBracket(table, pensionYen);
-  const pensionDeductionNode = fromYen('公的年金等控除', calcPensionDeduction(pensionYen, input.age), {
-    formula: [
-      bracket.rate > 0
-        ? `年金収入 × ${percentLabel(bracket.rate)} + ${toManyen(bracket.constant)}万円`
-        : `${toManyen(bracket.constant)}万円(定額区分)`,
-      `(${input.age >= 65 ? '65歳以上' : '65歳未満'}の速算表)`,
-    ],
-  });
+  const pensionDeductionNode = fromYen(
+    '公的年金等控除',
+    calcPensionDeduction(pensionYen, input.age),
+    {
+      formula: [
+        bracket.rate > 0
+          ? `年金収入 × ${percentLabel(bracket.rate)} + ${toManyen(bracket.constant)}万円`
+          : `${toManyen(bracket.constant)}万円(定額区分)`,
+        `(${input.age >= 65 ? '65歳以上' : '65歳未満'}の速算表)`,
+      ],
+    },
+  );
   const miscIncomeNode = fromYen('公的年金等の雑所得', taxableIncome, {
     formula: [
       { node: fromYen('年金収入(額面)', pensionYen) },
@@ -739,11 +740,17 @@ export function calcPensionTaxDetailed(input: PensionTaxInput): PensionTaxDetail
     { node: miscIncomeNode },
     ...personalDeductionNodes(input, 'incomeTax').map((node) => ({ op: '−', node })),
   ]);
+  const incomeTaxNode = calcIncomeTaxDetailed(taxableNode);
 
-  return {
-    result,
-    explain: { incomeTax: calcIncomeTaxDetailed(taxableIncome - deductions.incomeTax, taxableNode) },
+  // 所得税と手取りはノードの値から導出する(式と実際の計算値を単一の計算源に揃える)。
+  const residentTaxYen = calcResidentTax(taxableIncome - deductions.residentTax);
+  const result: PensionTaxResult = {
+    incomeTax: incomeTaxNode.value,
+    residentTax: toManyen(residentTaxYen),
+    netPension: toManyen(pensionYen) - incomeTaxNode.value - toManyen(residentTaxYen),
   };
+
+  return { result, explain: { incomeTax: incomeTaxNode } };
 }
 
 // ---------------------------------------------------------------------------
@@ -942,7 +949,8 @@ export function calcRetirementTaxableIncomeDetailed(
     { op: '−', node: deductionNode },
     ') × 1/2',
   ];
-  if (retirementBonusYen < calcRetirementIncomeDeduction(yearsOfService)) {
+  // 0 未満の切り上げ判定も控除ノードの値から行う(式の項と判定の計算源を揃える)。
+  if (retirementBonusYen < toYen(deductionNode.value)) {
     formula.push('(0未満のため0円)');
   }
 
@@ -961,20 +969,18 @@ export function calcRetirementTaxDetailed(input: RetirementTaxInput): {
   explain: CalcNode;
 } {
   const retirementBonusYen = toYen(input.retirementBonus);
-  const taxableIncomeYen = calcRetirementTaxableIncome(retirementBonusYen, input.yearsOfService);
+  const bonusNode = fromYen('退職金 額面', retirementBonusYen);
   const taxableNode = calcRetirementTaxableIncomeDetailed(retirementBonusYen, input.yearsOfService);
+  const taxable = taxableYenFromNode(taxableNode);
 
   // 所得税は給与等と同じ速算表(復興特別所得税込み)を分離適用する。課税標準は1,000円未満切り捨て。
-  const taxable = roundDownTo1000(Math.max(0, taxableIncomeYen));
-  const incomeTaxYen = calcIncomeTax(taxableIncomeYen);
-  const incomeTaxNode = calcIncomeTaxDetailed(taxableIncomeYen, taxableNode);
+  const incomeTaxNode = calcIncomeTaxDetailed(taxableNode);
 
   // 住民税は所得割(10%)のみ。均等割は分離課税では課さない。
-  const residentTaxYen = floorYen(taxable * RESIDENT_TAX.incomeRate);
   const residentTaxNode: CalcNode =
     taxable === 0
-      ? fromYen('住民税', residentTaxYen, { formula: ['課税退職所得が0円のため非課税'] })
-      : fromYen('住民税', residentTaxYen, {
+      ? fromYen('住民税', 0, { formula: ['課税退職所得が0円のため非課税'] })
+      : fromYen('住民税', floorYen(taxable * RESIDENT_TAX.incomeRate), {
           formula: [
             { node: taxableNode },
             { op: '×', node: percent('住民税率(所得割)', toPercent(RESIDENT_TAX.incomeRate)) },
@@ -982,23 +988,21 @@ export function calcRetirementTaxDetailed(input: RetirementTaxInput): {
           ],
         });
 
-  const netYen = retirementBonusYen - incomeTaxYen - residentTaxYen;
+  // result はノードの値から導出する(式に表示する項と実際の計算値を単一の計算源に揃える)。
+  const explain: CalcNode = {
+    label: '退職金(手取り)',
+    value: bonusNode.value - incomeTaxNode.value - residentTaxNode.value,
+    formula: [
+      { node: bonusNode },
+      { op: '−', node: incomeTaxNode },
+      { op: '−', node: residentTaxNode },
+    ],
+  };
   const result: RetirementTaxResult = {
-    incomeTax: toManyen(incomeTaxYen),
-    residentTax: toManyen(residentTaxYen),
-    netRetirementBonus: toManyen(netYen),
+    incomeTax: incomeTaxNode.value,
+    residentTax: residentTaxNode.value,
+    netRetirementBonus: explain.value,
   };
 
-  return {
-    result,
-    explain: {
-      label: '退職金(手取り)',
-      value: result.netRetirementBonus,
-      formula: [
-        { node: fromYen('退職金 額面', retirementBonusYen) },
-        { op: '−', node: incomeTaxNode },
-        { op: '−', node: residentTaxNode },
-      ],
-    },
-  };
+  return { result, explain };
 }
