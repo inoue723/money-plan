@@ -39,7 +39,7 @@ import {
   type DependentCategory,
   type NhiCategoryRate,
 } from './constants';
-import { fromYen, percent, years, type CalcNode, type FormulaPart } from './explain';
+import { fromYen, manyen, percent, years, type CalcNode, type FormulaPart } from './explain';
 import type { IncomeInput, TaxBreakdown } from './types';
 
 // ---------------------------------------------------------------------------
@@ -219,6 +219,45 @@ function calcPersonalDeductions(options: PersonalDeductionOptions = {}): Persona
   return { incomeTax, residentTax };
 }
 
+/** 扶養控除区分の表示名(計算根拠ノード用)。 */
+const DEPENDENT_CATEGORY_LABEL: Record<DependentCategory, string> = {
+  general: '一般',
+  specific: '特定',
+  elderly: '老人',
+};
+
+/**
+ * 人的控除(基礎・配偶者・扶養・小規模企業共済等掛金控除)の計算根拠ノード一覧を作る。
+ * ノードの値の合計は `calcPersonalDeductions` の該当側(`kind`)と一致する。
+ */
+function personalDeductionNodes(
+  options: PersonalDeductionOptions = {},
+  kind: 'incomeTax' | 'residentTax',
+): CalcNode[] {
+  const {
+    hasSpouseDeduction = false,
+    dependents = [],
+    smallBusinessMutualAidDeduction = 0,
+  } = options;
+
+  const nodes: CalcNode[] = [fromYen('基礎控除', BASIC_DEDUCTION[kind])];
+  if (hasSpouseDeduction) nodes.push(fromYen('配偶者控除', SPOUSE_DEDUCTION[kind]));
+  for (const category of ['general', 'specific', 'elderly'] as const) {
+    const count = dependents.filter((c) => c === category).length;
+    if (count === 0) continue;
+    const suffix = count > 1 ? `×${count}` : '';
+    nodes.push(
+      fromYen(
+        `扶養控除(${DEPENDENT_CATEGORY_LABEL[category]}${suffix})`,
+        DEPENDENT_DEDUCTION[category][kind] * count,
+      ),
+    );
+  }
+  const mutualAid = Math.max(0, smallBusinessMutualAidDeduction);
+  if (mutualAid > 0) nodes.push(manyen('小規模企業共済等掛金控除(iDeCo等)', mutualAid));
+  return nodes;
+}
+
 // ---------------------------------------------------------------------------
 // 所得税 / 住民税
 // ---------------------------------------------------------------------------
@@ -250,6 +289,53 @@ export function calcResidentTax(taxableIncomeYen: number): number {
 }
 
 // ---------------------------------------------------------------------------
+// 計算根拠(Detailed 版)の共通ヘルパー(explain.ts の移行規約に従う)
+// ---------------------------------------------------------------------------
+
+/** 率(小数)を表示用の % 数値に直す(0.021 → 2.1。浮動小数の桁ゴミは表示側で丸める)。 */
+const toPercent = (rate: number): number => rate * 100;
+
+/** 率(小数)を式リテラルに埋め込む % 表記に整形する(例: 0.0915 → '9.15%')。 */
+const percentLabel = (rate: number): string =>
+  `${toPercent(rate).toLocaleString('ja-JP', { maximumFractionDigits: 3 })}%`;
+
+/** 復興特別所得税を含むことを式に付記するリテラル。 */
+const surtaxNote = (): string => `(復興特別所得税${percentLabel(RECONSTRUCTION_SURTAX_RATE)}込)`;
+
+/**
+ * 課税所得ノードを作る。値は課税標準の丸め(1,000円未満切捨て・0未満は0)を適用した後の額にし、
+ * 丸めの存在は式のリテラルで付記する(式の各項の計算値とのずれを説明する)。
+ */
+function taxableIncomeNode(label: string, taxableYen: number, terms: FormulaPart[]): CalcNode {
+  return fromYen(label, Math.max(0, roundDownTo1000(taxableYen)), {
+    formula: [...terms, '(1,000円未満切捨て・0未満は0)'],
+  });
+}
+
+/**
+ * `calcIncomeTax` の計算根拠つき版。課税標準の項として `taxableNode` を式に埋め込む
+ * (給与・事業・年金・退職所得の各所得税で共用する)。
+ */
+export function calcIncomeTaxDetailed(taxableIncomeYen: number, taxableNode: CalcNode): CalcNode {
+  const taxable = Math.max(0, roundDownTo1000(taxableIncomeYen));
+  const incomeTaxYen = calcIncomeTax(taxableIncomeYen);
+  if (taxable === 0) {
+    return fromYen('所得税', incomeTaxYen, {
+      formula: [`${taxableNode.label}が0円のため非課税`],
+    });
+  }
+  const bracket = findBracket(INCOME_TAX_BRACKETS, taxable);
+  return fromYen('所得税', incomeTaxYen, {
+    formula: [
+      { node: taxableNode },
+      { op: '×', node: percent('所得税率', toPercent(bracket.rate)) },
+      { op: '−', node: fromYen('速算控除額', bracket.deduction) },
+      surtaxNote(),
+    ],
+  });
+}
+
+// ---------------------------------------------------------------------------
 // 給与の税・社会保険料の総合計算
 // ---------------------------------------------------------------------------
 
@@ -276,6 +362,34 @@ export interface SalaryTaxResult {
  * 社会保険料控除は所得税・住民税とも社会保険料の全額を対象とする。
  */
 export function calcSalaryTax(input: SalaryTaxInput): SalaryTaxResult {
+  return calcSalaryTaxDetailed(input).result;
+}
+
+/** 給与所得控除の計算根拠ノード。速算表の該当区分の式を表示する。 */
+function salaryIncomeDeductionNode(grossSalaryYen: number): CalcNode {
+  const bracket = findBracket(SALARY_INCOME_DEDUCTION, grossSalaryYen);
+  const constantMan = toManyen(Math.abs(bracket.constant));
+  const formula: FormulaPart[] =
+    bracket.rate > 0
+      ? [
+          `給与収入 × ${percentLabel(bracket.rate)} ${bracket.constant >= 0 ? '+' : '−'} ${constantMan}万円(速算表)`,
+        ]
+      : [`${constantMan}万円(速算表の定額区分)`];
+  return fromYen('給与所得控除', calcSalaryIncomeDeduction(grossSalaryYen), { formula });
+}
+
+/** `calcSalaryTax` の計算根拠つき版の結果。 */
+export interface SalaryTaxDetailedResult {
+  result: SalaryTaxResult;
+  /** 出力フィールドごとの計算根拠(段階的移行中。現状は所得税のみ)。 */
+  explain: { incomeTax: CalcNode };
+}
+
+/**
+ * `calcSalaryTax` の計算根拠つき版。給与税の算術の本体はこちらに置き、
+ * legacy 関数は `.result` を返すラッパーにする(移行規約)。
+ */
+export function calcSalaryTaxDetailed(input: SalaryTaxInput): SalaryTaxDetailedResult {
   const grossYen = toYen(input.grossSalary);
 
   const salaryIncome = calcSalaryIncome(grossYen);
@@ -298,8 +412,31 @@ export function calcSalaryTax(input: SalaryTaxInput): SalaryTaxResult {
     employmentInsurance: toManyen(social.employment),
     socialInsurance: toManyen(social.total),
   };
+  const result: SalaryTaxResult = { breakdown, netSalary: toManyen(netYen) };
 
-  return { breakdown, netSalary: toManyen(netYen) };
+  // --- 計算根拠ツリー(所得税): 課税所得(給与) = 給与所得 − 社会保険料控除 − 人的控除 ---
+  const salaryIncomeNode = fromYen('給与所得', salaryIncome, {
+    formula: [
+      { node: fromYen('給与収入(額面)', grossYen) },
+      { op: '−', node: salaryIncomeDeductionNode(grossYen) },
+      '(0未満は0)',
+    ],
+  });
+  const socialNode = fromYen('社会保険料控除', social.total, {
+    formula: [
+      { node: fromYen('健康保険', social.health) },
+      { op: '+', node: fromYen('厚生年金', social.pension) },
+      { op: '+', node: fromYen('雇用保険', social.employment) },
+      '(給与収入 × 概算料率)',
+    ],
+  });
+  const taxableNode = taxableIncomeNode('課税所得(給与)', incomeTaxable, [
+    { node: salaryIncomeNode },
+    { op: '−', node: socialNode },
+    ...personalDeductionNodes(input, 'incomeTax').map((node) => ({ op: '−', node })),
+  ]);
+
+  return { result, explain: { incomeTax: calcIncomeTaxDetailed(incomeTaxable, taxableNode) } };
 }
 
 /**
@@ -396,6 +533,23 @@ export interface SelfEmployedTaxResult {
  * 所得税・住民税は給与所得者と同じ累進課税ロジックを流用する。
  */
 export function calcSelfEmployedTax(input: SelfEmployedTaxInput): SelfEmployedTaxResult {
+  return calcSelfEmployedTaxDetailed(input).result;
+}
+
+/** `calcSelfEmployedTax` の計算根拠つき版の結果。 */
+export interface SelfEmployedTaxDetailedResult {
+  result: SelfEmployedTaxResult;
+  /** 出力フィールドごとの計算根拠(段階的移行中。現状は所得税のみ)。 */
+  explain: { incomeTax: CalcNode };
+}
+
+/**
+ * `calcSelfEmployedTax` の計算根拠つき版。事業税の算術の本体はこちらに置き、
+ * legacy 関数は `.result` を返すラッパーにする(移行規約)。
+ */
+export function calcSelfEmployedTaxDetailed(
+  input: SelfEmployedTaxInput,
+): SelfEmployedTaxDetailedResult {
   const grossYen = toYen(input.businessIncome);
 
   const businessIncome = calcBusinessIncome(grossYen);
@@ -418,8 +572,36 @@ export function calcSelfEmployedTax(input: SelfEmployedTaxInput): SelfEmployedTa
     employmentInsurance: 0,
     socialInsurance: toManyen(social.total),
   };
+  const result: SelfEmployedTaxResult = { breakdown, netIncome: toManyen(netYen) };
 
-  return { breakdown, netIncome: toManyen(netYen) };
+  // --- 計算根拠ツリー(所得税): 課税所得(事業) = 控除後所得 − 社会保険料控除 − 人的控除 ---
+  const businessIncomeNode = fromYen('青色申告特別控除後の所得', businessIncome, {
+    formula: [
+      { node: fromYen('事業所得(売上 − 経費)', grossYen) },
+      { op: '−', node: fromYen('青色申告特別控除', BLUE_RETURN_DEDUCTION) },
+      '(0未満は0)',
+    ],
+  });
+  const socialNode = fromYen('社会保険料控除', social.total, {
+    formula: [
+      {
+        node: fromYen('国民健康保険', social.health, {
+          formula: ['所得に応じた概算(所得割 + 均等割。区分ごとの限度額あり)'],
+        }),
+      },
+      {
+        op: '+',
+        node: fromYen('国民年金', social.pension, { formula: ['定額(月額 × 12ヶ月)'] }),
+      },
+    ],
+  });
+  const taxableNode = taxableIncomeNode('課税所得(事業)', incomeTaxable, [
+    { node: businessIncomeNode },
+    { op: '−', node: socialNode },
+    ...personalDeductionNodes(input, 'incomeTax').map((node) => ({ op: '−', node })),
+  ]);
+
+  return { result, explain: { incomeTax: calcIncomeTaxDetailed(incomeTaxable, taxableNode) } };
 }
 
 // ---------------------------------------------------------------------------
@@ -506,6 +688,21 @@ export interface PensionTaxResult {
  * 雑所得 = 年金収入 − 公的年金等控除。課税所得 = 雑所得 − 基礎控除 − 配偶者控除 − 扶養控除。
  */
 export function calcPensionTax(input: PensionTaxInput): PensionTaxResult {
+  return calcPensionTaxDetailed(input).result;
+}
+
+/** `calcPensionTax` の計算根拠つき版の結果。 */
+export interface PensionTaxDetailedResult {
+  result: PensionTaxResult;
+  /** 出力フィールドごとの計算根拠(段階的移行中。現状は所得税のみ)。 */
+  explain: { incomeTax: CalcNode };
+}
+
+/**
+ * `calcPensionTax` の計算根拠つき版。年金税の算術の本体はこちらに置き、
+ * legacy 関数は `.result` を返すラッパーにする(移行規約)。
+ */
+export function calcPensionTaxDetailed(input: PensionTaxInput): PensionTaxDetailedResult {
   const pensionYen = toYen(input.pension);
   const taxableIncome = calcPensionTaxableIncome(pensionYen, input.age);
   const deductions = calcPersonalDeductions(input);
@@ -514,10 +711,38 @@ export function calcPensionTax(input: PensionTaxInput): PensionTaxResult {
   const residentTaxYen = calcResidentTax(taxableIncome - deductions.residentTax);
   const netYen = pensionYen - incomeTaxYen - residentTaxYen;
 
-  return {
+  const result: PensionTaxResult = {
     incomeTax: toManyen(incomeTaxYen),
     residentTax: toManyen(residentTaxYen),
     netPension: toManyen(netYen),
+  };
+
+  // --- 計算根拠ツリー(所得税): 課税所得(年金) = 雑所得(収入 − 公的年金等控除) − 人的控除 ---
+  const table = input.age >= 65 ? PENSION_DEDUCTION.from65 : PENSION_DEDUCTION.under65;
+  const bracket = findBracket(table, pensionYen);
+  const pensionDeductionNode = fromYen('公的年金等控除', calcPensionDeduction(pensionYen, input.age), {
+    formula: [
+      bracket.rate > 0
+        ? `年金収入 × ${percentLabel(bracket.rate)} + ${toManyen(bracket.constant)}万円`
+        : `${toManyen(bracket.constant)}万円(定額区分)`,
+      `(${input.age >= 65 ? '65歳以上' : '65歳未満'}の速算表)`,
+    ],
+  });
+  const miscIncomeNode = fromYen('公的年金等の雑所得', taxableIncome, {
+    formula: [
+      { node: fromYen('年金収入(額面)', pensionYen) },
+      { op: '−', node: pensionDeductionNode },
+      '(0未満は0)',
+    ],
+  });
+  const taxableNode = taxableIncomeNode('課税所得(年金)', taxableIncome - deductions.incomeTax, [
+    { node: miscIncomeNode },
+    ...personalDeductionNodes(input, 'incomeTax').map((node) => ({ op: '−', node })),
+  ]);
+
+  return {
+    result,
+    explain: { incomeTax: calcIncomeTaxDetailed(taxableIncome - deductions.incomeTax, taxableNode) },
   };
 }
 
@@ -659,9 +884,6 @@ export function calcRetirementTax(input: RetirementTaxInput): RetirementTaxResul
 // 退職所得課税の計算根拠つき(Detailed)版(explain.ts の移行規約に従う)
 // ---------------------------------------------------------------------------
 
-/** 率(小数)を表示用の % 数値に直す(0.021 → 2.1。浮動小数の桁ゴミは表示側で丸める)。 */
-const toPercent = (rate: number): number => rate * 100;
-
 /**
  * `calcRetirementIncomeDeduction` の計算根拠つき版。値の算出は legacy 関数に委譲する。
  *
@@ -745,23 +967,7 @@ export function calcRetirementTaxDetailed(input: RetirementTaxInput): {
   // 所得税は給与等と同じ速算表(復興特別所得税込み)を分離適用する。課税標準は1,000円未満切り捨て。
   const taxable = roundDownTo1000(Math.max(0, taxableIncomeYen));
   const incomeTaxYen = calcIncomeTax(taxableIncomeYen);
-  let incomeTaxNode: CalcNode;
-  if (taxable === 0) {
-    incomeTaxNode = fromYen('所得税', incomeTaxYen, { formula: ['課税退職所得が0円のため非課税'] });
-  } else {
-    const bracket = findBracket(INCOME_TAX_BRACKETS, taxable);
-    const surtaxPercent = toPercent(RECONSTRUCTION_SURTAX_RATE).toLocaleString('ja-JP', {
-      maximumFractionDigits: 2,
-    });
-    incomeTaxNode = fromYen('所得税', incomeTaxYen, {
-      formula: [
-        { node: taxableNode },
-        { op: '×', node: percent('所得税率', toPercent(bracket.rate)) },
-        { op: '−', node: fromYen('速算控除額', bracket.deduction) },
-        `(復興特別所得税${surtaxPercent}%込)`,
-      ],
-    });
-  }
+  const incomeTaxNode = calcIncomeTaxDetailed(taxableIncomeYen, taxableNode);
 
   // 住民税は所得割(10%)のみ。均等割は分離課税では課さない。
   const residentTaxYen = floorYen(taxable * RESIDENT_TAX.incomeRate);

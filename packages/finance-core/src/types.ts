@@ -530,7 +530,7 @@ export interface ExpenseBreakdown {
  * CF表側は行定義からこのキーで根拠を引く。移行の進行に合わせてキーを追加する
  * (将来: 'incomeTax' | 'residentTax' | …)。
  */
-export type YearlyDetailKey = 'otherIncome';
+export type YearlyDetailKey = 'otherIncome' | 'incomeTax';
 
 /** シミュレーション結果(1年分。SPEC.md 4.4、金額はすべて万円)。 */
 export interface YearlyResult {

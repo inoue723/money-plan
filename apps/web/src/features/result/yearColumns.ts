@@ -147,7 +147,12 @@ function buildExpenseRows(result: YearlyResult[]): CashflowRow[] {
   rows.push({ label: 'イベント費用', get: (r) => r.expense.events });
 
   // 控除(税・社会保険)は #67 で支出セクションに統合した。支出項目の後・合計の前に並べる。
-  rows.push({ label: '所得税', get: (r) => r.tax.incomeTax });
+  rows.push({
+    label: '所得税',
+    get: (r) => r.tax.incomeTax,
+    // 給与/事業・年金・本人/配偶者の内訳と課税所得の導出をツールチップで出す。
+    getDetail: (r) => r.details?.incomeTax,
+  });
   rows.push({ label: '住民税', get: (r) => r.tax.residentTax });
   rows.push({ label: '健康保険', get: (r) => r.tax.healthInsurance });
   rows.push({ label: '厚生年金', get: (r) => r.tax.pensionInsurance });

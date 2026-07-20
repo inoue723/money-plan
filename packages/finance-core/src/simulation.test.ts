@@ -449,9 +449,9 @@ describe('runSimulation', () => {
     expect(termLabels).toEqual(['退職金(本人・手取り)', '退職金以外のその他収入']);
     // その他収入が退職金のみの年は、残余の項を hidden にしてノイズを避ける。
     expect(detailTermNodes(detail!)[1]!.hidden).toBe(true);
-    // 根拠が無い年には details プロパティ自体を付けない。
+    // 退職金の無い年には「その他収入」の根拠を付けない。
     const otherYear = result.find((y) => !y.events.includes('退職金'))!;
-    expect(otherYear.details).toBeUndefined();
+    expect(otherYear.details?.otherIncome).toBeUndefined();
   });
 
   it('本人・配偶者が同年に退職すると、その他収入の根拠に両者の退職金の項が並ぶ', () => {
