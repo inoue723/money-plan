@@ -14,6 +14,7 @@
 import { useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
 import type { SimulationResult } from '@money-plan/finance-core';
+import { CalcTooltip } from '../../components/CalcTooltip';
 import { useSimulationResult, useSimulationStore } from '../../stores/simulationStore';
 import { buildAgeHeaderRows, buildCashflowSections, formatMan } from './yearColumns';
 
@@ -255,6 +256,13 @@ function CashflowTable({
                     const value = row.get(r, colIdx, result);
                     const isSelected = r.year === selectedYear;
                     const negative = !row.text && typeof value === 'number' && value < 0;
+                    // 計算根拠があるセルはツールチップ付きで表示する(点線下線が目印)。
+                    const detail = row.getDetail?.(r);
+                    const content = row.text
+                      ? value || '—'
+                      : typeof value === 'number'
+                        ? formatMan(value)
+                        : value;
                     return (
                       <td
                         key={r.year}
@@ -268,11 +276,7 @@ function CashflowTable({
                               : 'text-slate-700'
                         }`}
                       >
-                        {row.text
-                          ? value || '—'
-                          : typeof value === 'number'
-                            ? formatMan(value)
-                            : value}
+                        {detail ? <CalcTooltip node={detail}>{content}</CalcTooltip> : content}
                       </td>
                     );
                   })}

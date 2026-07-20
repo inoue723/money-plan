@@ -39,6 +39,7 @@ import {
   type DependentCategory,
   type NhiCategoryRate,
 } from './constants';
+import { fromYen, percent, years, type CalcNode, type FormulaPart } from './explain';
 import type { IncomeInput, TaxBreakdown } from './types';
 
 // ---------------------------------------------------------------------------
@@ -651,19 +652,147 @@ export interface RetirementTaxResult {
  * @returns 所得税・住民税・手取り退職金(いずれも万円)。
  */
 export function calcRetirementTax(input: RetirementTaxInput): RetirementTaxResult {
+  return calcRetirementTaxDetailed(input).result;
+}
+
+// ---------------------------------------------------------------------------
+// 退職所得課税の計算根拠つき(Detailed)版(explain.ts の移行規約に従う)
+// ---------------------------------------------------------------------------
+
+/** 率(小数)を表示用の % 数値に直す(0.021 → 2.1。浮動小数の桁ゴミは表示側で丸める)。 */
+const toPercent = (rate: number): number => rate * 100;
+
+/**
+ * `calcRetirementIncomeDeduction` の計算根拠つき版。値の算出は legacy 関数に委譲する。
+ *
+ * @returns 退職所得控除のノード(万円)。勤続年数の切り上げが起きた場合のみ、勤続年数の項が
+ *   切り上げの根拠(formula)を持つ(整数入力なら葉のままにしてノイズを避ける)。
+ */
+export function calcRetirementIncomeDeductionDetailed(yearsOfService: number): CalcNode {
+  const { perYearUpTo20, perYearOver20, thresholdYears, minimum } = RETIREMENT_INCOME_DEDUCTION;
+  const yearsCounted = Math.max(1, Math.ceil(yearsOfService));
+  const deductionYen = calcRetirementIncomeDeduction(yearsOfService);
+
+  const yearsNode = years('勤続年数', yearsCounted);
+  if (yearsCounted !== yearsOfService) {
+    yearsNode.formula = [`${yearsOfService}年 の1年未満を切り上げ(最低1年)`];
+  }
+
+  const formula: FormulaPart[] =
+    yearsCounted <= thresholdYears
+      ? [`${toManyen(perYearUpTo20)}万円 ×`, { node: yearsNode }]
+      : [
+          `${toManyen(perYearUpTo20 * thresholdYears)}万円 + ${toManyen(perYearOver20)}万円 × (`,
+          { node: yearsNode },
+          `− ${thresholdYears}年)`,
+        ];
+  if (perYearUpTo20 * yearsCounted < minimum) {
+    formula.push(`(最低${toManyen(minimum)}万円を適用)`);
+  }
+
+  return fromYen('退職所得控除', deductionYen, {
+    formula,
+    notes: [
+      {
+        severity: 'info',
+        text: 'iDeCo等の一時金と近い年に受け取る場合の控除枠の重複調整(10年ルール)は簡易化のため未適用',
+      },
+    ],
+  });
+}
+
+/**
+ * `calcRetirementTaxableIncome` の計算根拠つき版。値の算出は legacy 関数に委譲する。
+ *
+ * @returns 課税退職所得のノード(万円)。式は「(額面 − 退職所得控除) × 1/2」で、
+ *   退職所得控除の項からさらにドリルダウンできる。
+ */
+export function calcRetirementTaxableIncomeDetailed(
+  retirementBonusYen: number,
+  yearsOfService: number,
+): CalcNode {
+  const taxableYen = calcRetirementTaxableIncome(retirementBonusYen, yearsOfService);
+  const deductionNode = calcRetirementIncomeDeductionDetailed(yearsOfService);
+
+  const formula: FormulaPart[] = [
+    '(',
+    { node: fromYen('退職金 額面', retirementBonusYen) },
+    { op: '−', node: deductionNode },
+    ') × 1/2',
+  ];
+  if (retirementBonusYen < calcRetirementIncomeDeduction(yearsOfService)) {
+    formula.push('(0未満のため0円)');
+  }
+
+  return fromYen('課税退職所得', taxableYen, { formula });
+}
+
+/**
+ * `calcRetirementTax` の計算根拠つき版。退職所得課税の算術の本体はこちらに置き、
+ * legacy 関数は `.result` を返すラッパーにする(移行規約)。
+ *
+ * @returns `result`: 従来どおりの税額・手取り(万円)。`explain`: 手取り退職金を根とする
+ *   計算根拠ツリー(額面 − 所得税 − 住民税。所得税・住民税の項からドリルダウンできる)。
+ */
+export function calcRetirementTaxDetailed(input: RetirementTaxInput): {
+  result: RetirementTaxResult;
+  explain: CalcNode;
+} {
   const retirementBonusYen = toYen(input.retirementBonus);
   const taxableIncomeYen = calcRetirementTaxableIncome(retirementBonusYen, input.yearsOfService);
+  const taxableNode = calcRetirementTaxableIncomeDetailed(retirementBonusYen, input.yearsOfService);
 
-  // 所得税は給与等と同じ速算表(復興特別所得税込み)を分離適用する。
+  // 所得税は給与等と同じ速算表(復興特別所得税込み)を分離適用する。課税標準は1,000円未満切り捨て。
+  const taxable = roundDownTo1000(Math.max(0, taxableIncomeYen));
   const incomeTaxYen = calcIncomeTax(taxableIncomeYen);
-  // 住民税は所得割(10%)のみ。均等割は分離課税では課さない。課税標準は1,000円未満切り捨て。
-  const residentTaxYen = floorYen(roundDownTo1000(taxableIncomeYen) * RESIDENT_TAX.incomeRate);
+  let incomeTaxNode: CalcNode;
+  if (taxable === 0) {
+    incomeTaxNode = fromYen('所得税', incomeTaxYen, { formula: ['課税退職所得が0円のため非課税'] });
+  } else {
+    const bracket = findBracket(INCOME_TAX_BRACKETS, taxable);
+    const surtaxPercent = toPercent(RECONSTRUCTION_SURTAX_RATE).toLocaleString('ja-JP', {
+      maximumFractionDigits: 2,
+    });
+    incomeTaxNode = fromYen('所得税', incomeTaxYen, {
+      formula: [
+        { node: taxableNode },
+        { op: '×', node: percent('所得税率', toPercent(bracket.rate)) },
+        { op: '−', node: fromYen('速算控除額', bracket.deduction) },
+        `(復興特別所得税${surtaxPercent}%込)`,
+      ],
+    });
+  }
+
+  // 住民税は所得割(10%)のみ。均等割は分離課税では課さない。
+  const residentTaxYen = floorYen(taxable * RESIDENT_TAX.incomeRate);
+  const residentTaxNode: CalcNode =
+    taxable === 0
+      ? fromYen('住民税', residentTaxYen, { formula: ['課税退職所得が0円のため非課税'] })
+      : fromYen('住民税', residentTaxYen, {
+          formula: [
+            { node: taxableNode },
+            { op: '×', node: percent('住民税率(所得割)', toPercent(RESIDENT_TAX.incomeRate)) },
+            '(分離課税のため均等割なし)',
+          ],
+        });
 
   const netYen = retirementBonusYen - incomeTaxYen - residentTaxYen;
-
-  return {
+  const result: RetirementTaxResult = {
     incomeTax: toManyen(incomeTaxYen),
     residentTax: toManyen(residentTaxYen),
     netRetirementBonus: toManyen(netYen),
+  };
+
+  return {
+    result,
+    explain: {
+      label: '退職金(手取り)',
+      value: result.netRetirementBonus,
+      formula: [
+        { node: fromYen('退職金 額面', retirementBonusYen) },
+        { op: '−', node: incomeTaxNode },
+        { op: '−', node: residentTaxNode },
+      ],
+    },
   };
 }

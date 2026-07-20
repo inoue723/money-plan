@@ -21,10 +21,12 @@
  */
 
 import { educationCostForAge } from './education';
+import type { CalcNode, FormulaPart } from './explain';
 import {
   calcChildAllowanceManyen,
   calcPensionTax,
   calcRetirementTax,
+  calcRetirementTaxDetailed,
   calcSalaryTax,
   calcSelfEmployedTax,
   estimatePension,
@@ -215,6 +217,8 @@ interface PersonYearIncome {
   pensionWithdrawalTax: number;
   /** 当年に退職金を計上したか(イベント名表示用)。 */
   retiredThisYear: boolean;
+  /** 退職金の計算根拠ツリー(手取り退職金が根。退職金を計上した年のみ)。CF表ツールチップ用。 */
+  retirementTaxExplain?: CalcNode;
 }
 
 /**
@@ -312,13 +316,15 @@ const calcPersonYearIncome = (
   const recurringOther = income.other;
   let oneTimeOther = 0;
   let retiredThisYear = false;
+  let retirementTaxExplain: CalcNode | undefined;
   if (age === retirementBonusAge && income.retirementBonus > 0) {
-    const { netRetirementBonus } = calcRetirementTax({
+    const { result, explain } = calcRetirementTaxDetailed({
       retirementBonus: income.retirementBonus,
       yearsOfService: retirementYearsOfService,
     });
-    oneTimeOther += netRetirementBonus;
+    oneTimeOther += result.netRetirementBonus;
     retiredThisYear = true;
+    retirementTaxExplain = explain;
   }
 
   return {
@@ -331,6 +337,7 @@ const calcPersonYearIncome = (
     tax,
     pensionWithdrawalTax,
     retiredThisYear,
+    retirementTaxExplain,
   };
 };
 
@@ -574,6 +581,34 @@ export function runSimulation(input: SimulationInput): SimulationResult {
       }
     }
 
+    // その他収入の計算根拠(CF表ツールチップ用)。退職金を計上した年のみ作る。
+    // otherIncome は一時収入イベント加算後の最終値なので、イベントループの後で組み立てる。
+    // 本人・配偶者が同年に退職した場合は両者の根拠ツリーを 1 つの式の項として並べる。
+    let otherIncomeDetail: CalcNode | undefined;
+    if (selfYear.retirementTaxExplain || spouseYear?.retirementTaxExplain) {
+      const parts: FormulaPart[] = [];
+      const pushTerm = (node: CalcNode) =>
+        parts.push(parts.length === 0 ? { node } : { op: '+', node });
+      if (selfYear.retirementTaxExplain) {
+        pushTerm({ ...selfYear.retirementTaxExplain, label: '退職金(本人・手取り)' });
+      }
+      if (spouseYear?.retirementTaxExplain) {
+        pushTerm({ ...spouseYear.retirementTaxExplain, label: '退職金(配偶者・手取り)' });
+      }
+      // 退職金以外(固定その他収入 + 一時収入イベント)の残余。0 なら式から隠してノイズを避ける。
+      const retirementNet = parts.reduce(
+        (sum, p) => sum + (typeof p === 'string' ? 0 : p.node.value),
+        0,
+      );
+      const nonRetirementOther = otherIncome - retirementNet;
+      pushTerm({
+        label: '退職金以外のその他収入',
+        value: nonRetirementOther,
+        hidden: Math.abs(nonRetirementOther) < 1e-9,
+      });
+      otherIncomeDetail = { label: 'その他収入', value: otherIncome, formula: parts };
+    }
+
     const totalExpense = (rent ?? 0) + itemsTotal + education + loan + eventExpense;
 
     // =========================================================================
@@ -646,6 +681,8 @@ export function runSimulation(input: SimulationInput): SimulationResult {
       investmentGain: invStep.gain,
       totalAssets,
       events: eventNames,
+      // 根拠が無い年は details プロパティ自体を付けない(結果比較・シリアライズを既存挙動に保つ)。
+      ...(otherIncomeDetail ? { details: { otherIncome: otherIncomeDetail } } : {}),
     });
   }
 

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { CAPITAL_GAINS_TAX_RATE } from './constants';
+import { renderFormula, type CalcNode } from './explain';
 import { runSimulation } from './simulation';
 import { calcRetirementTax } from './tax';
 import type {
@@ -43,6 +44,12 @@ const expenseItem = (
   inflationRate,
   periods: [{ startAge, endAge, monthlyAmount }],
 });
+
+/** 計算根拠ノードの式(formula)からノード参照の項だけを取り出す(テスト用)。 */
+const detailTermNodes = (node: CalcNode): CalcNode[] =>
+  (node.formula ?? [])
+    .filter((p): p is { op?: string; node: CalcNode } => typeof p !== 'string')
+    .map((p) => p.node);
 
 /** 最小構成の入力を生成し、必要な部分だけ上書きする。 */
 const baseInput = (overrides: Partial<SimulationInput> = {}): SimulationInput => ({
@@ -420,6 +427,72 @@ describe('runSimulation', () => {
     expect(bonusYear.income.other).toBeLessThan(1000);
     expect(bonusYear.events).toContain('退職金');
     expect(result.filter((y) => y.events.includes('退職金'))).toHaveLength(1);
+  });
+
+  it('退職金の年はその他収入の計算根拠(details.otherIncome)が付き、他の年には付かない', () => {
+    const result = runSimulation(
+      baseInput({
+        income: {
+          workPeriods: [workPeriod({ startAge: 30, endAge: 39 })],
+          retirementBonus: 1000,
+          pension: 0,
+          other: 0,
+        },
+      }),
+    );
+    const bonusYear = result.find((y) => y.events.includes('退職金'))!;
+    const detail = bonusYear.details?.otherIncome;
+    expect(detail).toBeDefined();
+    // 根の値はCF表の「その他収入」セルの値と一致する。
+    expect(detail!.value).toBeCloseTo(bonusYear.income.other, 6);
+    const termLabels = detailTermNodes(detail!).map((n) => n.label);
+    expect(termLabels).toEqual(['退職金(本人・手取り)', '退職金以外のその他収入']);
+    // その他収入が退職金のみの年は、残余の項を hidden にしてノイズを避ける。
+    expect(detailTermNodes(detail!)[1]!.hidden).toBe(true);
+    // 根拠が無い年には details プロパティ自体を付けない。
+    const otherYear = result.find((y) => !y.events.includes('退職金'))!;
+    expect(otherYear.details).toBeUndefined();
+  });
+
+  it('本人・配偶者が同年に退職すると、その他収入の根拠に両者の退職金の項が並ぶ', () => {
+    const result = runSimulation(
+      baseInput({
+        income: {
+          workPeriods: [workPeriod({ startAge: 30, endAge: 60 })],
+          retirementBonus: 1000,
+          pension: 0,
+          other: 0,
+        },
+        family: {
+          children: [],
+          spouse: {
+            age: 30,
+            income: {
+              workPeriods: [workPeriod({ startAge: 30, endAge: 60, income: 400, raiseRate: 0 })],
+              retirementBonus: 500,
+              pension: 0,
+              other: 0,
+            },
+          },
+        },
+      }),
+    );
+    // 両者とも60歳まで勤務 → 61歳(同年)に退職金を計上する。
+    const bonusYear = result.find((y) => y.age === 61)!;
+    expect(bonusYear.events).toContain('退職金');
+    expect(bonusYear.events).toContain('配偶者退職金');
+    const detail = bonusYear.details?.otherIncome;
+    expect(detail).toBeDefined();
+    expect(detail!.value).toBeCloseTo(bonusYear.income.other, 6);
+    const termLabels = detailTermNodes(detail!).map((n) => n.label);
+    expect(termLabels).toEqual([
+      '退職金(本人・手取り)',
+      '退職金(配偶者・手取り)',
+      '退職金以外のその他収入',
+    ]);
+    // 各退職金の項は手取り退職金を根とする根拠ツリー(額面 − 所得税 − 住民税)を持つ。
+    const selfTerm = detailTermNodes(detail!)[0]!;
+    expect(renderFormula(selfTerm)).toContain('退職金 額面');
   });
 
   it('会社員期間が無い場合は退職金を計上しない', () => {

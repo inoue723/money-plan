@@ -7,6 +7,8 @@
  *   万円↔円 の換算は各計算モジュール(別issue)側で行う。
  */
 
+import type { CalcNode } from './explain';
+
 // ---------------------------------------------------------------------------
 // 教育・家族
 // ---------------------------------------------------------------------------
@@ -523,6 +525,13 @@ export interface ExpenseBreakdown {
   events: number;
 }
 
+/**
+ * CF表の行に紐づく計算根拠ツリー(CalcNode)のキー。
+ * CF表側は行定義からこのキーで根拠を引く。移行の進行に合わせてキーを追加する
+ * (将来: 'incomeTax' | 'residentTax' | …)。
+ */
+export type YearlyDetailKey = 'otherIncome';
+
 /** シミュレーション結果(1年分。SPEC.md 4.4、金額はすべて万円)。 */
 export interface YearlyResult {
   /** 西暦。 */
@@ -566,6 +575,12 @@ export interface YearlyResult {
   totalAssets: number;
   /** 当年に発生したライフイベント名。 */
   events: string[];
+  /**
+   * CF表の行に紐づく計算根拠ツリー(ツールチップ表示用)。
+   * 当年に根拠が存在する行のキーのみ入る(例: 退職金の発生年のみ 'otherIncome')。
+   * 根拠が1つも無い年はプロパティ自体を持たない。
+   */
+  details?: Partial<Record<YearlyDetailKey, CalcNode>>;
 }
 
 /** シミュレーション結果全体(年次結果の時系列)。 */
