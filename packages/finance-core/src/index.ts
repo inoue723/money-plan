@@ -14,18 +14,46 @@ export * from './constants';
 // シミュレーション本体(公開API。Web 側の唯一の計算入口)。
 export { runSimulation } from './simulation';
 
+// 計算根拠ツリー(CalcNode)— CF表ツールチップ等で計算式・根拠を表示するための共通インターフェース。
+// 各計算関数は段階的に「金額だけ」ではなくこの形を返す方式へ移行する(explain.ts の移行規約参照)。
+export {
+  formatNodeRef,
+  formatNodeValue,
+  renderFormula,
+  type CalcNode,
+  type CalcNote,
+  type CalcNoteSeverity,
+  type CalcUnit,
+  type FormulaPart,
+} from './explain';
+
 // 退職所得課税(退職金の退職所得控除・1/2課税・分離課税)の計算関数(#19)。
 // 退職金額・勤続年数の引数で完結する汎用関数。#73(iDeCo・小規模企業共済の一時金)でも再利用する。
+// Detailed 版は計算根拠ツリー(CalcNode)つきで返す(CF表ツールチップ用)。
 export {
   calcRetirementIncomeDeduction,
+  calcRetirementIncomeDeductionDetailed,
   calcRetirementTax,
+  calcRetirementTaxDetailed,
   calcRetirementTaxableIncome,
+  calcRetirementTaxableIncomeDetailed,
   type RetirementTaxInput,
   type RetirementTaxResult,
 } from './tax';
 
 // 公的年金受給額の就労履歴からの推定(#21)。UI の自動計算表示でも利用する。
 export { estimatePension } from './tax';
+
+// 給与・事業・年金・所得税の計算根拠つき(Detailed)版(CF表ツールチップ用)。
+export {
+  calcIncomeTaxDetailed,
+  calcPensionTaxDetailed,
+  calcSalaryTaxDetailed,
+  calcSelfEmployedTaxDetailed,
+  type PensionTaxDetailedResult,
+  type SalaryTaxDetailedResult,
+  type SelfEmployedTaxDetailedResult,
+} from './tax';
 
 // 投資枠のバリデーション補助(NISA 枠の初期保有額合計を求める。UI の上限警告に使う)。
 export { nisaInitialLifetimeUsage } from './investment';

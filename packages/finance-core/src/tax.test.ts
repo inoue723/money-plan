@@ -11,9 +11,15 @@ import {
   calcPensionTax,
   calcPensionTaxableIncome,
   calcResidentTax,
+  calcPensionTaxDetailed,
   calcRetirementIncomeDeduction,
+  calcRetirementIncomeDeductionDetailed,
   calcRetirementTax,
+  calcRetirementTaxDetailed,
   calcRetirementTaxableIncome,
+  calcRetirementTaxableIncomeDetailed,
+  calcSalaryTaxDetailed,
+  calcSelfEmployedTaxDetailed,
   calcSalaryIncome,
   calcSalaryIncomeDeduction,
   calcSalaryTax,
@@ -22,7 +28,14 @@ import {
   calcSocialInsurance,
   estimatePension,
 } from './tax';
+import { renderFormula, type CalcNode, type FormulaPart } from './explain';
 import type { IncomeInput, WorkPeriod } from './types';
+
+/** 式(FormulaPart[])からノード参照の項だけを取り出す(テスト用)。 */
+const formulaNodes = (node: CalcNode): CalcNode[] =>
+  (node.formula ?? [])
+    .filter((p): p is Exclude<FormulaPart, string> => typeof p !== 'string')
+    .map((p) => p.node);
 
 describe('給与所得控除', () => {
   it('速算表どおりに控除額を計算する', () => {
@@ -424,6 +437,170 @@ describe('退職所得(退職金の退職所得控除・分離課税)', () => {
     expect(residentTax).toBe(80);
     // 手取り = 2000 − 122.9284 − 80 = 1797.0716 万
     expect(netRetirementBonus).toBeCloseTo(1797.0716, 4);
+  });
+});
+
+describe('退職所得の計算根拠(Detailed 版。CF表ツールチップ用)', () => {
+  it('退職所得控除: 勤続20年超の式と10年ルール未適用の注記を持つ', () => {
+    const d = calcRetirementIncomeDeductionDetailed(35);
+    // 800万 + 70万 × (35 − 20) = 1,850万
+    expect(d.value).toBe(1850);
+    expect(renderFormula(d)).toBe('800万円 + 70万円 × ( 35年(勤続年数) − 20年)');
+    expect(d.notes).toHaveLength(1);
+    expect(d.notes![0]!.severity).toBe('info');
+    expect(d.notes![0]!.text).toContain('10年ルール');
+    expect(d.notes![0]!.text).toContain('未適用');
+    // 整数入力なら勤続年数の項は切り上げの根拠を持たない(ドリルダウン不可な葉のまま)。
+    const [yearsNode] = formulaNodes(d);
+    expect(yearsNode!.formula).toBeUndefined();
+  });
+
+  it('退職所得控除: 勤続20年以下の式・端数切り上げの根拠・最低80万の適用を表示する', () => {
+    // 端数入力(10.1年)では勤続年数の項が切り上げの根拠(formula)を持つ。
+    const fractional = calcRetirementIncomeDeductionDetailed(10.1);
+    expect(fractional.value).toBe(440);
+    expect(renderFormula(fractional)).toBe('40万円 × 11年(勤続年数)');
+    const [yearsNode] = formulaNodes(fractional);
+    expect(renderFormula(yearsNode!)).toContain('10.1年 の1年未満を切り上げ');
+
+    // 勤続1年は 40万 × 1 = 40万 < 最低80万 → 最低保証の適用を式に明記する。
+    const minimum = calcRetirementIncomeDeductionDetailed(1);
+    expect(minimum.value).toBe(80);
+    expect(renderFormula(minimum)).toBe('40万円 × 1年(勤続年数) (最低80万円を適用)');
+  });
+
+  it('課税退職所得: (額面 − 控除) × 1/2 の式で、控除の項からドリルダウンできる', () => {
+    const d = calcRetirementTaxableIncomeDetailed(20_000_000, 10);
+    expect(d.value).toBe(800);
+    expect(renderFormula(d)).toBe('( 2,000万円(退職金 額面) − 400万円(退職所得控除) ) × 1/2');
+    // 控除の項自身が式(40万円 × 勤続年数)を持ち、ドリルダウンできる。
+    const deductionNode = formulaNodes(d).find((n) => n.label === '退職所得控除')!;
+    expect(renderFormula(deductionNode)).toBe('40万円 × 10年(勤続年数)');
+  });
+
+  it('退職金税: result は legacy と同値で、explain は 額面 − 所得税 − 住民税 の根拠ツリーになる', () => {
+    const input = { retirementBonus: 2000, yearsOfService: 10 };
+    const { result, explain } = calcRetirementTaxDetailed(input);
+
+    // 算術は Detailed 側に一本化しており、legacy(ラッパー)と完全一致する。
+    expect(result).toEqual(calcRetirementTax(input));
+    expect(explain.value).toBe(result.netRetirementBonus);
+    expect(renderFormula(explain)).toBe(
+      '2,000万円(退職金 額面) − 122.93万円(所得税) − 80万円(住民税)',
+    );
+
+    // 所得税の項: 課税退職所得 × 税率 − 速算控除額(課税退職所得からさらにドリルダウンできる)。
+    const [, incomeTaxNode, residentTaxNode] = formulaNodes(explain);
+    expect(incomeTaxNode!.value).toBeCloseTo(result.incomeTax, 10);
+    expect(renderFormula(incomeTaxNode!)).toBe(
+      '800万円(課税退職所得) × 23%(所得税率) − 63.6万円(速算控除額) (復興特別所得税2.1%込)',
+    );
+    const taxableNode = formulaNodes(incomeTaxNode!).find((n) => n.label === '課税退職所得')!;
+    expect(renderFormula(taxableNode)).toContain('× 1/2');
+
+    // 住民税の項: 課税退職所得 × 10%(均等割なし)。
+    expect(residentTaxNode!.value).toBeCloseTo(result.residentTax, 10);
+    expect(renderFormula(residentTaxNode!)).toBe(
+      '800万円(課税退職所得) × 10%(住民税率(所得割)) (分離課税のため均等割なし)',
+    );
+  });
+
+  it('退職金税: 控除内に収まる場合は税の項が非課税表記になる', () => {
+    const { result, explain } = calcRetirementTaxDetailed({
+      retirementBonus: 1000,
+      yearsOfService: 30,
+    });
+    expect(result.netRetirementBonus).toBe(1000);
+    const [, incomeTaxNode, residentTaxNode] = formulaNodes(explain);
+    expect(incomeTaxNode!.value).toBe(0);
+    expect(residentTaxNode!.value).toBe(0);
+    expect(renderFormula(incomeTaxNode!)).toBe('課税退職所得が0円のため非課税');
+    expect(renderFormula(residentTaxNode!)).toBe('課税退職所得が0円のため非課税');
+  });
+});
+
+describe('給与・事業・年金の所得税の計算根拠(Detailed 版。CF表ツールチップ用)', () => {
+  it('給与: result は legacy と同値で、課税所得(給与)→給与所得→給与所得控除とドリルダウンできる', () => {
+    const input = { grossSalary: 700, age: 45 };
+    const { result, explain } = calcSalaryTaxDetailed(input);
+    expect(result).toEqual(calcSalaryTax(input));
+    expect(explain.incomeTax.value).toBeCloseTo(result.breakdown.incomeTax, 10);
+
+    const rendered = renderFormula(explain.incomeTax);
+    expect(rendered).toContain('課税所得(給与)');
+    expect(rendered).toContain('所得税率');
+    expect(rendered).toContain('復興特別所得税');
+
+    // 課税所得(給与) = 給与所得 − 社会保険料控除 − 基礎控除(丸めの注記つき)。
+    const taxableNode = formulaNodes(explain.incomeTax).find((n) => n.label === '課税所得(給与)')!;
+    const taxableRendered = renderFormula(taxableNode);
+    expect(taxableRendered).toContain('給与所得');
+    expect(taxableRendered).toContain('社会保険料控除');
+    expect(taxableRendered).toContain('基礎控除');
+    expect(taxableRendered).toContain('1,000円未満切捨て');
+
+    // 給与所得 = 給与収入(額面) − 給与所得控除(速算表の式つき)。
+    const salaryIncomeNode = formulaNodes(taxableNode).find((n) => n.label === '給与所得')!;
+    expect(renderFormula(salaryIncomeNode)).toContain('給与収入(額面)');
+    const deductionNode = formulaNodes(salaryIncomeNode).find((n) => n.label === '給与所得控除')!;
+    expect(renderFormula(deductionNode)).toContain('速算表');
+
+    // 社会保険料控除 = 健康保険 + 厚生年金 + 雇用保険。
+    const socialNode = formulaNodes(taxableNode).find((n) => n.label === '社会保険料控除')!;
+    expect(formulaNodes(socialNode).map((n) => n.label)).toEqual([
+      '健康保険',
+      '厚生年金',
+      '雇用保険',
+    ]);
+  });
+
+  it('給与: 配偶者控除・扶養控除・iDeCo が課税所得の式の項に現れる', () => {
+    const { explain } = calcSalaryTaxDetailed({
+      grossSalary: 700,
+      hasSpouseDeduction: true,
+      dependents: ['specific', 'general', 'general'],
+      smallBusinessMutualAidDeduction: 24,
+    });
+    const taxableNode = formulaNodes(explain.incomeTax).find((n) => n.label === '課税所得(給与)')!;
+    const labels = formulaNodes(taxableNode).map((n) => n.label);
+    expect(labels).toContain('配偶者控除');
+    expect(labels).toContain('扶養控除(特定)');
+    expect(labels).toContain('扶養控除(一般×2)');
+    expect(labels).toContain('小規模企業共済等掛金控除(iDeCo等)');
+  });
+
+  it('給与: 課税所得が 0 なら非課税の式になる', () => {
+    const { result, explain } = calcSalaryTaxDetailed({ grossSalary: 100 });
+    expect(result.breakdown.incomeTax).toBe(0);
+    expect(renderFormula(explain.incomeTax)).toBe('課税所得(給与)が0円のため非課税');
+  });
+
+  it('事業: result は legacy と同値で、青色申告特別控除と国保・国民年金の式を持つ', () => {
+    const input = { businessIncome: 600, age: 40 };
+    const { result, explain } = calcSelfEmployedTaxDetailed(input);
+    expect(result).toEqual(calcSelfEmployedTax(input));
+
+    const taxableNode = formulaNodes(explain.incomeTax).find((n) => n.label === '課税所得(事業)')!;
+    const businessNode = formulaNodes(taxableNode).find(
+      (n) => n.label === '青色申告特別控除後の所得',
+    )!;
+    expect(renderFormula(businessNode)).toContain('青色申告特別控除');
+    const socialNode = formulaNodes(taxableNode).find((n) => n.label === '社会保険料控除')!;
+    expect(formulaNodes(socialNode).map((n) => n.label)).toEqual(['国民健康保険', '国民年金']);
+  });
+
+  it('年金: result は legacy と同値で、公的年金等控除(65歳以上の速算表)の式を持つ', () => {
+    const input = { pension: 200, age: 70 };
+    const { result, explain } = calcPensionTaxDetailed(input);
+    expect(result).toEqual(calcPensionTax(input));
+
+    const taxableNode = formulaNodes(explain.incomeTax).find((n) => n.label === '課税所得(年金)')!;
+    const miscNode = formulaNodes(taxableNode).find((n) => n.label === '公的年金等の雑所得')!;
+    // 年金収入 200万(65歳以上)→ 公的年金等控除 110万・雑所得 90万。
+    expect(miscNode.value).toBe(90);
+    const pensionDeduction = formulaNodes(miscNode).find((n) => n.label === '公的年金等控除')!;
+    expect(pensionDeduction.value).toBe(110);
+    expect(renderFormula(pensionDeduction)).toContain('65歳以上');
   });
 });
 

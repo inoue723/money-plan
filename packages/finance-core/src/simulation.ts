@@ -21,12 +21,15 @@
  */
 
 import { educationCostForAge } from './education';
+import type { CalcNode, FormulaPart } from './explain';
 import {
   calcChildAllowanceManyen,
   calcPensionTax,
+  calcPensionTaxDetailed,
   calcRetirementTax,
-  calcSalaryTax,
-  calcSelfEmployedTax,
+  calcRetirementTaxDetailed,
+  calcSalaryTaxDetailed,
+  calcSelfEmployedTaxDetailed,
   estimatePension,
   type PersonalDeductionOptions,
 } from './tax';
@@ -215,6 +218,13 @@ interface PersonYearIncome {
   pensionWithdrawalTax: number;
   /** 当年に退職金を計上したか(イベント名表示用)。 */
   retiredThisYear: boolean;
+  /** 退職金の計算根拠ツリー(手取り退職金が根。退職金を計上した年のみ)。CF表ツールチップ用。 */
+  retirementTaxExplain?: CalcNode;
+  /**
+   * この人の当年の所得税の計算根拠の項(給与分/事業分/年金分。月割按分前)。CF表ツールチップ用。
+   * 給与・年金いずれの税計算も行わなかった年は空配列。
+   */
+  incomeTaxTerms: CalcNode[];
 }
 
 /**
@@ -248,21 +258,29 @@ const calcPersonYearIncome = (
 
   let tax = emptyTaxBreakdown();
   let salaryNet = 0;
+  // 所得税の計算根拠(給与/事業・年金の各項)。合算した所得税の式の項として並べる。
+  const incomeTaxTerms: CalcNode[] = [];
   if (workPeriod && grossSalary > 0) {
     if (workPeriod.workStyle === 'employee') {
       // 会社員: 給与所得控除 + 健康保険・厚生年金・雇用保険。
-      const r = calcSalaryTax({ grossSalary, age, ...deductionWithMutualAid });
+      const { result: r, explain } = calcSalaryTaxDetailed({
+        grossSalary,
+        age,
+        ...deductionWithMutualAid,
+      });
       tax = addTaxBreakdown(tax, r.breakdown);
       salaryNet += r.netSalary;
+      incomeTaxTerms.push({ ...explain.incomeTax, label: '所得税(給与分)' });
     } else {
       // 個人事業主: 青色申告特別控除 + 国民健康保険・国民年金(雇用保険なし)。
-      const r = calcSelfEmployedTax({
+      const { result: r, explain } = calcSelfEmployedTaxDetailed({
         businessIncome: grossSalary,
         age,
         ...deductionWithMutualAid,
       });
       tax = addTaxBreakdown(tax, r.breakdown);
       salaryNet += r.netIncome;
+      incomeTaxTerms.push({ ...explain.incomeTax, label: '所得税(事業分)' });
     }
   }
 
@@ -278,7 +296,11 @@ const calcPersonYearIncome = (
   let basePensionIncomeTax = 0;
   let basePensionResidentTax = 0;
   if (receivingPension) {
-    const pensionTax = calcPensionTax({ pension: basePension, age, ...deductionWithMutualAid });
+    const { result: pensionTax, explain } = calcPensionTaxDetailed({
+      pension: basePension,
+      age,
+      ...deductionWithMutualAid,
+    });
     tax = addTaxBreakdown(tax, {
       ...emptyTaxBreakdown(),
       incomeTax: pensionTax.incomeTax,
@@ -288,6 +310,7 @@ const calcPersonYearIncome = (
     pensionNet = pensionTax.netPension;
     basePensionIncomeTax = pensionTax.incomeTax;
     basePensionResidentTax = pensionTax.residentTax;
+    incomeTaxTerms.push({ ...explain.incomeTax, label: '所得税(年金分)' });
   }
 
   // 分割取崩(spread)= 年金受取(#73): その年の受取額を公的年金収入に合算し、公的年金等控除つきで課税する。
@@ -312,13 +335,15 @@ const calcPersonYearIncome = (
   const recurringOther = income.other;
   let oneTimeOther = 0;
   let retiredThisYear = false;
+  let retirementTaxExplain: CalcNode | undefined;
   if (age === retirementBonusAge && income.retirementBonus > 0) {
-    const { netRetirementBonus } = calcRetirementTax({
+    const { result, explain } = calcRetirementTaxDetailed({
       retirementBonus: income.retirementBonus,
       yearsOfService: retirementYearsOfService,
     });
-    oneTimeOther += netRetirementBonus;
+    oneTimeOther += result.netRetirementBonus;
     retiredThisYear = true;
+    retirementTaxExplain = explain;
   }
 
   return {
@@ -331,8 +356,23 @@ const calcPersonYearIncome = (
     tax,
     pensionWithdrawalTax,
     retiredThisYear,
+    retirementTaxExplain,
+    incomeTaxTerms,
   };
 };
+
+/**
+ * 1 人分の所得税の項(給与分/事業分/年金分)を 1 つのノードにまとめる(本人・配偶者を
+ * 区別して並べる年に使う)。源泉が1つならその項をラベルだけ付け替え、複数なら合算の式にする。
+ */
+const combinePersonIncomeTax = (person: PersonYearIncome, label: string): CalcNode =>
+  person.incomeTaxTerms.length === 1
+    ? { ...person.incomeTaxTerms[0]!, label }
+    : {
+        label,
+        value: person.tax.incomeTax,
+        formula: person.incomeTaxTerms.map((node, k) => (k === 0 ? { node } : { op: '+', node })),
+      };
 
 // ---------------------------------------------------------------------------
 // 本体
@@ -574,6 +614,71 @@ export function runSimulation(input: SimulationInput): SimulationResult {
       }
     }
 
+    // その他収入の計算根拠(CF表ツールチップ用)。退職金を計上した年のみ作る。
+    // otherIncome は一時収入イベント加算後の最終値なので、イベントループの後で組み立てる。
+    // 本人・配偶者が同年に退職した場合は両者の根拠ツリーを 1 つの式の項として並べる。
+    let otherIncomeDetail: CalcNode | undefined;
+    if (selfYear.retirementTaxExplain || spouseYear?.retirementTaxExplain) {
+      const parts: FormulaPart[] = [];
+      const pushTerm = (node: CalcNode) =>
+        parts.push(parts.length === 0 ? { node } : { op: '+', node });
+      if (selfYear.retirementTaxExplain) {
+        pushTerm({ ...selfYear.retirementTaxExplain, label: '退職金(本人・手取り)' });
+      }
+      if (spouseYear?.retirementTaxExplain) {
+        pushTerm({ ...spouseYear.retirementTaxExplain, label: '退職金(配偶者・手取り)' });
+      }
+      // 退職金以外(固定その他収入 + 一時収入イベント)の残余。0 なら式から隠してノイズを避ける。
+      const retirementNet = parts.reduce(
+        (sum, p) => sum + (typeof p === 'string' ? 0 : p.node.value),
+        0,
+      );
+      const nonRetirementOther = otherIncome - retirementNet;
+      pushTerm({
+        label: '退職金以外のその他収入',
+        value: nonRetirementOther,
+        hidden: Math.abs(nonRetirementOther) < 1e-9,
+      });
+      otherIncomeDetail = { label: 'その他収入', value: otherIncome, formula: parts };
+    }
+
+    // 所得税の計算根拠(CF表ツールチップ用)。本人・配偶者の項を並べ、月割係数を掛ける。
+    // 係数は初年の月割按分(#51)がある年だけ意味を持ち、1 の年は結果が変わらないため
+    // hidden で式から隠す(ノイズ抑制)。
+    let incomeTaxDetail: CalcNode | undefined;
+    {
+      // 配偶者がいる年は本人/配偶者の項にまとめて並べ、単身の年は給与分/年金分の項を直接並べる。
+      const terms: CalcNode[] = [];
+      if (spouseYear) {
+        if (selfYear.incomeTaxTerms.length > 0) {
+          terms.push(combinePersonIncomeTax(selfYear, '所得税(本人)'));
+        }
+        if (spouseYear.incomeTaxTerms.length > 0) {
+          terms.push(combinePersonIncomeTax(spouseYear, '所得税(配偶者)'));
+        }
+      } else {
+        terms.push(...selfYear.incomeTaxTerms);
+      }
+      if (terms.length > 0) {
+        const factorNode: CalcNode = {
+          label: '初年の月割係数',
+          value: monthFactor,
+          unit: 'none',
+          hidden: monthFactor === 1,
+          formula: [`開始月による初年の按分(${firstYearMonths}ヶ月 ÷ 12ヶ月)`],
+        };
+        const termParts: FormulaPart[] = terms.map((node, k) =>
+          k === 0 ? { node } : { op: '+', node },
+        );
+        // 係数を表示する年(初年の月割)は、加算の項を括弧で括ってから係数を掛ける。
+        const formula: FormulaPart[] =
+          monthFactor !== 1 && terms.length > 1
+            ? ['(', ...termParts, ')', { op: '×', node: factorNode }]
+            : [...termParts, { op: '×', node: factorNode }];
+        incomeTaxDetail = { label: '所得税', value: taxBreakdown.incomeTax, formula };
+      }
+    }
+
     const totalExpense = (rent ?? 0) + itemsTotal + education + loan + eventExpense;
 
     // =========================================================================
@@ -646,6 +751,15 @@ export function runSimulation(input: SimulationInput): SimulationResult {
       investmentGain: invStep.gain,
       totalAssets,
       events: eventNames,
+      // 根拠が1つも無い年は details プロパティ自体を付けない(結果比較・シリアライズを既存挙動に保つ)。
+      ...(otherIncomeDetail || incomeTaxDetail
+        ? {
+            details: {
+              ...(otherIncomeDetail ? { otherIncome: otherIncomeDetail } : {}),
+              ...(incomeTaxDetail ? { incomeTax: incomeTaxDetail } : {}),
+            },
+          }
+        : {}),
     });
   }
 

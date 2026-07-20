@@ -11,7 +11,7 @@
  * 数値フォーマッタ(formatMan / truncMan)は本ファイルで定義し、CF表・
  * グラフ(chartKit 経由)で共有して表示・丸めを統一する。
  */
-import type { YearlyResult } from '@money-plan/finance-core';
+import type { CalcNode, YearlyResult } from '@money-plan/finance-core';
 
 /**
  * 金額(万円)の万円未満を切り捨てる(issue #27)。
@@ -67,6 +67,11 @@ export interface CashflowRow {
   text?: boolean;
   /** 小計・合計行として強調表示する。 */
   emphasize?: boolean;
+  /**
+   * 当年のセル値の計算根拠ツリー(あればセルにツールチップを付ける)。
+   * 根拠が存在しない年は undefined を返す(例: 退職金が無い年のその他収入)。
+   */
+  getDetail?: (r: YearlyResult) => CalcNode | undefined;
 }
 
 /** CF表のセクション(見出し + 内訳行)。視覚的なグルーピングに使う。 */
@@ -142,7 +147,12 @@ function buildExpenseRows(result: YearlyResult[]): CashflowRow[] {
   rows.push({ label: 'イベント費用', get: (r) => r.expense.events });
 
   // 控除(税・社会保険)は #67 で支出セクションに統合した。支出項目の後・合計の前に並べる。
-  rows.push({ label: '所得税', get: (r) => r.tax.incomeTax });
+  rows.push({
+    label: '所得税',
+    get: (r) => r.tax.incomeTax,
+    // 給与/事業・年金・本人/配偶者の内訳と課税所得の導出をツールチップで出す。
+    getDetail: (r) => r.details?.incomeTax,
+  });
   rows.push({ label: '住民税', get: (r) => r.tax.residentTax });
   rows.push({ label: '健康保険', get: (r) => r.tax.healthInsurance });
   rows.push({ label: '厚生年金', get: (r) => r.tax.pensionInsurance });
@@ -199,7 +209,12 @@ export function buildCashflowSections(result: YearlyResult[]): CashflowSection[]
         { label: '配偶者給与', get: (r) => r.income.spouseSalary },
         { label: '年金', get: (r) => r.income.pension },
         { label: '児童手当', get: (r) => r.income.childAllowance },
-        { label: 'その他収入', get: (r) => r.income.other },
+        {
+          label: 'その他収入',
+          get: (r) => r.income.other,
+          // 退職金の発生年は計算根拠(額面・勤続年数・退職所得控除など)をツールチップで出す。
+          getDetail: (r) => r.details?.otherIncome,
+        },
         { label: '収入合計', get: (r) => totalIncome(r), emphasize: true },
       ],
     },
