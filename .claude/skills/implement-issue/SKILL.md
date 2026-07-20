@@ -1,7 +1,7 @@
 ---
 name: implement-issue
 description: >-
-  GitHub上の実装チケット(Issue)を1件受け取り、mainから作業ブランチを切り、
+  GitHub上の実装チケット(Issue)を1件受け取り、作業ブランチを切り、
   Issueの内容を実装し、Pull Requestを作成するワークフロー。ユーザーが
   「Issue #2 を実装して」「このissueをやって」「#002 に着手して」のように
   GitHub Issueの番号やタイトルを指定して実装を依頼したときは、必ずこのskillを使うこと。
@@ -10,7 +10,7 @@ description: >-
 
 # implement-issue
 
-GitHub Issue を1件、mainから派生したブランチ上で実装し、Pull Requestを作成するためのワークフロー。
+GitHub Issue を1件、専用のブランチ上で実装し、Pull Requestを作成するためのワークフロー。派生元は原則 `main` だが、未マージの依存PRの上に積む場合は指定されたブランチから派生する。
 
 このリポジトリでは実装作業を GitHub Issue 単位で切り出している。このskillは「1 issue = 1 ブランチ = 1 PR」を徹底し、レビューしやすい単位で変更を積み上げるためのもの。
 
@@ -35,9 +35,21 @@ gh issue view <番号> --json number,title,body,url,state,labels
 
 取得した issue の本文(目的 / 依存issue / やること / 完了条件)から、特に次を把握する:
 
-- **依存issue**: 「なし」以外の記載があれば、`gh issue view <依存番号> --json state` で状態を確認する。未クローズなら着手可否をユーザーに確認する。土台が無い状態で実装するとブランチが破綻するため。
+- **依存issue**: 「なし」以外の記載があれば、`gh issue view <依存番号> --json state` で状態を確認する。未クローズなら着手可否をユーザーに確認する。土台が無い状態で実装するとブランチが破綻するため。ただし**依頼者から派生元ブランチを指定されている場合は確認不要**(下記「派生元ブランチの指定」参照)。土台は既にそのブランチ上にあるため。
 - **やること**: ここに列挙された作業がスコープのすべて。列挙されていない変更に手を出すとPRが肥大化し、issue分割の意図を壊す。
 - **完了条件(受け入れ基準)**: これが実装のゴールであり、後で自己検証するチェックリストになる。
+
+## 派生元ブランチの指定
+
+デフォルトでは `origin/main` から派生し、PRのbaseも `main` にする。
+
+ただし依頼者(ユーザー、または orchestrate-project のオーケストレータ)が**派生元ブランチを明示している場合は、そちらを優先する**。未マージの依存PRの上にPRを積む(stacked PR)ケースがこれにあたる。その場合:
+
+- worktree は `origin/main` ではなく指定されたブランチから切る
+- `gh pr create --base <指定ブランチ>` でPRのbaseを指定ブランチにする
+- **依存ブランチに既に入っている変更は再実装しない。** 自分のissueの「やること」の差分だけを積む。依存側の実装に問題を見つけても自分で直さず、報告に含める(そのPRのレビューで対応されるべきもの)
+
+以降の手順中の `origin/main` / `--base main` は、指定がある場合すべて指定ブランチに読み替える。
 
 ## 手順
 
@@ -62,6 +74,8 @@ BRANCH=feature/2
 WT=../money-plan-worktrees/2
 git worktree add -b "$BRANCH" "$WT" origin/main
 ```
+
+派生元の指定がある場合は最後の `origin/main` を指定ブランチに置き換える(例: `origin/feature/1`)。
 
 #### gitignore対象の必要ファイルをコピー
 
@@ -105,6 +119,8 @@ git push -u origin "$BRANCH"
 gh pr create --base main --head "$BRANCH" \
   --title "<PRタイトル>" --body "<PR本文>"
 ```
+
+派生元の指定がある場合は `--base` を指定ブランチにする。**`--base main` のまま作ると依存ブランチの差分がPRに丸ごと混入してレビュー不能になる**ので、作成後に `gh pr view <PR番号> --json baseRefName` と `gh pr diff` で、baseと差分が意図通りか確認する。
 
 PR タイトルは issue の主題を簡潔に表す(例: `monorepo初期セットアップ (#1)`)。PR 本文は次の構成にする:
 
